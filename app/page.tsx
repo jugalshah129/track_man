@@ -2,6 +2,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Card, CardBody, CardHeader, Chip, Divider, Input } from '@heroui/react';
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  type User,
+} from 'firebase/auth';
+import { addDoc, collection, doc, onSnapshot, orderBy, query, updateDoc } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase';
 
 type RiderStatus = 'registered' | 'on-track' | 'returned';
 
@@ -13,32 +22,55 @@ type Rider = {
   status: RiderStatus;
 };
 
-const STORAGE_KEY = 'track-man-riders';
-const ADMIN_PASS = 'trackman-admin';
-
 export default function TrackManPage() {
   const [activeView, setActiveView] = useState<'public' | 'admin'>('public');
-  const [adminAuthed, setAdminAuthed] = useState(false);
-  const [adminPassInput, setAdminPassInput] = useState('');
-  const [passError, setPassError] = useState('');
+  const [adminUser, setAdminUser] = useState<User | null>(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
 
-  const [riders, setRiders] = useState<Rider[]>(() => {
-    if (typeof window === 'undefined') return [];
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw) as Rider[];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  });
+  const [riders, setRiders] = useState<Rider[]>([]);
+  const [dataError, setDataError] = useState('');
+  const [dataLoading, setDataLoading] = useState(true);
+
   const [riderName, setRiderName] = useState('');
   const [bikeNumber, setBikeNumber] = useState('');
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(riders));
-  }, [riders]);
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      setAdminUser(user);
+    });
+
+    const ridersQuery = query(collection(db, 'riders'), orderBy('createdAt', 'asc'));
+    const unsubRiders = onSnapshot(
+      ridersQuery,
+      (snapshot) => {
+        const nextRiders: Rider[] = snapshot.docs.map((item) => {
+          const data = item.data() as Omit<Rider, 'id'>;
+          return {
+            id: item.id,
+            name: data.name,
+            bikeNumber: data.bikeNumber,
+            createdAt: Number(data.createdAt ?? Date.now()),
+            status: data.status,
+          };
+        });
+        setRiders(nextRiders);
+        setDataError('');
+        setDataLoading(false);
+      },
+      () => {
+        setDataError('database is locked by rules right now. we will fix rules next.');
+        setDataLoading(false);
+      }
+    );
+
+    return () => {
+      unsubAuth();
+      unsubRiders();
+    };
+  }, []);
 
   const metrics = useMemo(() => {
     const totalRegistered = riders.length;
@@ -48,36 +80,72 @@ export default function TrackManPage() {
     return { totalRegistered, totalOnTrack, totalReturned, nextFive };
   }, [riders]);
 
-  const handleAdminLogin = () => {
-    if (adminPassInput.trim() === ADMIN_PASS) {
-      setAdminAuthed(true);
-      setPassError('');
-      setAdminPassInput('');
+  const handleSignIn = async () => {
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setAuthError('enter email and password');
       return;
     }
-    setPassError('wrong passcode');
+
+    try {
+      setAuthLoading(true);
+      setAuthError('');
+      await signInWithEmailAndPassword(auth, authEmail.trim(), authPassword);
+      setAuthPassword('');
+    } catch {
+      setAuthError('login failed. check your email/password.');
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
-  const registerRider = () => {
+  const handleCreateAccount = async () => {
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setAuthError('enter email and password');
+      return;
+    }
+
+    try {
+      setAuthLoading(true);
+      setAuthError('');
+      await createUserWithEmailAndPassword(auth, authEmail.trim(), authPassword);
+      setAuthPassword('');
+    } catch {
+      setAuthError('could not create account. try a stronger password.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    await signOut(auth);
+  };
+
+  const registerRider = async () => {
+    if (!adminUser) {
+      setAuthError('login first to add riders');
+      return;
+    }
     if (!riderName.trim() || !bikeNumber.trim()) return;
-    const rider: Rider = {
-      id: crypto.randomUUID(),
+
+    await addDoc(collection(db, 'riders'), {
       name: riderName.trim(),
       bikeNumber: bikeNumber.trim(),
       createdAt: Date.now(),
-      status: 'registered',
-    };
-    setRiders((prev) => [...prev, rider]);
+      status: 'registered' as RiderStatus,
+    });
+
     setRiderName('');
     setBikeNumber('');
   };
 
-  const moveToOnTrack = (id: string) => {
-    setRiders((prev) => prev.map((r) => (r.id === id ? { ...r, status: 'on-track' } : r)));
+  const moveToOnTrack = async (id: string) => {
+    if (!adminUser) return;
+    await updateDoc(doc(db, 'riders', id), { status: 'on-track' as RiderStatus });
   };
 
-  const markReturned = (id: string) => {
-    setRiders((prev) => prev.map((r) => (r.id === id ? { ...r, status: 'returned' } : r)));
+  const markReturned = async (id: string) => {
+    if (!adminUser) return;
+    await updateDoc(doc(db, 'riders', id), { status: 'returned' as RiderStatus });
   };
 
   return (
@@ -115,6 +183,14 @@ export default function TrackManPage() {
 
         {activeView === 'public' ? (
           <section className="space-y-5">
+            {dataError ? (
+              <Card className="border border-rose-200 bg-rose-50/80">
+                <CardBody>
+                  <p className="text-rose-700">{dataError}</p>
+                </CardBody>
+              </Card>
+            ) : null}
+
             <div className="grid gap-4 md:grid-cols-3">
               <Card className="border border-sky-100 bg-white/90">
                 <CardHeader className="pb-0 text-sm text-slate-500">Total Registration</CardHeader>
@@ -145,7 +221,9 @@ export default function TrackManPage() {
               </CardHeader>
               <Divider />
               <CardBody className="space-y-2">
-                {metrics.nextFive.length === 0 ? (
+                {dataLoading ? (
+                  <p className="text-slate-500">loading riders...</p>
+                ) : metrics.nextFive.length === 0 ? (
                   <p className="text-slate-500">no one waiting yet</p>
                 ) : (
                   metrics.nextFive.map((rider) => (
@@ -165,33 +243,34 @@ export default function TrackManPage() {
           </section>
         ) : (
           <section>
-            {!adminAuthed ? (
+            {!adminUser ? (
               <Card className="mx-auto w-full max-w-md border border-sky-100 bg-white/90">
                 <CardHeader>
                   <h2 className="text-2xl font-semibold text-slate-900">Admin Login</h2>
                 </CardHeader>
                 <CardBody className="space-y-4">
-                  <p className="text-sm text-slate-600">
-                    use passcode <span className="font-semibold text-slate-900">{ADMIN_PASS}</span>
-                  </p>
-                  <Input
-                    label="passcode"
-                    type="password"
-                    value={adminPassInput}
-                    onValueChange={setAdminPassInput}
-                    isInvalid={Boolean(passError)}
-                    errorMessage={passError}
-                  />
-                  <Button color="primary" onPress={handleAdminLogin}>
-                    Enter Admin Panel
-                  </Button>
+                  <p className="text-sm text-slate-600">use your firebase email + password</p>
+                  <Input label="email" type="email" value={authEmail} onValueChange={setAuthEmail} />
+                  <Input label="password" type="password" value={authPassword} onValueChange={setAuthPassword} />
+                  {authError ? <p className="text-sm text-rose-600">{authError}</p> : null}
+                  <div className="flex gap-2">
+                    <Button color="primary" isLoading={authLoading} onPress={handleSignIn}>
+                      Sign In
+                    </Button>
+                    <Button variant="flat" isLoading={authLoading} onPress={handleCreateAccount}>
+                      Create Account
+                    </Button>
+                  </div>
                 </CardBody>
               </Card>
             ) : (
               <div className="space-y-5">
                 <Card className="border border-sky-100 bg-white/90">
-                  <CardHeader>
+                  <CardHeader className="flex items-center justify-between">
                     <h2 className="text-2xl font-semibold text-slate-900">Register Participant</h2>
+                    <Button size="sm" variant="flat" onPress={handleSignOut}>
+                      Sign Out
+                    </Button>
                   </CardHeader>
                   <CardBody className="grid gap-3 md:grid-cols-3">
                     <Input label="name" value={riderName} onValueChange={setRiderName} />
