@@ -11,7 +11,8 @@ import {
   Input,
   Select,
   SelectItem,
-  Textarea,
+  Tabs,
+  Tab,
 } from '@heroui/react';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth';
 import {
@@ -41,9 +42,11 @@ type AppRole =
 type EventItem = {
   id: string;
   name: string;
+  location: string;
+  date: string;
   slug: string;
+  eventManagerEmail: string;
   createdBy: string;
-  plannerEmail: string;
   createdAt: number;
 };
 
@@ -66,19 +69,15 @@ type Participant = {
   id: string;
   eventId: string;
   name: string;
-  bikeNumber: string;
+  contactNumber: string;
+  email: string;
+  bikeOwned: string;
   createdAt: number;
   trainedAt?: number;
   gearAllocatedAt?: number;
   trackEnteredAt?: number;
   trackExitedAt?: number;
   gearReturnedAt?: number;
-  gearItems?: {
-    gloves: boolean;
-    jacket: boolean;
-    helmet: boolean;
-    kneeGuard: boolean;
-  };
 };
 
 const roleOptions: { key: AppRole; label: string }[] = [
@@ -91,13 +90,10 @@ const roleOptions: { key: AppRole; label: string }[] = [
   { key: 'track-manager', label: 'Track Manager' },
 ];
 
+const teamAssignableRoles: AppRole[] = ['event-manager', 'reception', 'trainer', 'gear-manager', 'track-manager'];
+
 function emailKey(email: string): string {
   return email.trim().toLowerCase().replaceAll('.', ',');
-}
-
-function roleLabel(role: AppRole): string {
-  const item = roleOptions.find((r) => r.key === role);
-  return item?.label ?? role;
 }
 
 function toSlug(value: string): string {
@@ -108,22 +104,15 @@ function toSlug(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function participantStage(p: Participant): string {
-  if (p.gearReturnedAt) return 'returned-gears';
-  if (p.trackExitedAt) return 'exited-track';
-  if (p.trackEnteredAt) return 'on-track';
-  if (p.gearAllocatedAt) return 'gear-allocated';
-  if (p.trainedAt) return 'trained';
-  return 'registered';
+function roleLabel(role: AppRole): string {
+  return roleOptions.find((item) => item.key === role)?.label ?? role;
 }
 
-function stageLabel(stage: string): string {
-  if (stage === 'registered') return 'Registered';
-  if (stage === 'trained') return 'Trained';
-  if (stage === 'gear-allocated') return 'Gears Allocated';
-  if (stage === 'on-track') return 'On Track';
-  if (stage === 'exited-track') return 'Exited Track';
-  return 'Returned Gears';
+function stage(item: Participant): 'registered' | 'trained' | 'track-completed' | 'in-line' {
+  if (item.trackExitedAt) return 'track-completed';
+  if (item.gearAllocatedAt && !item.trackEnteredAt) return 'in-line';
+  if (item.trainedAt) return 'trained';
+  return 'registered';
 }
 
 function csvEscape(value: string | number): string {
@@ -135,8 +124,8 @@ function csvEscape(value: string | number): string {
 }
 
 export default function TrackManPage() {
-  const [activeView, setActiveView] = useState<'public' | 'console'>('public');
   const [origin, setOrigin] = useState('');
+  const [tab, setTab] = useState<'public' | 'console'>('public');
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [globalRole, setGlobalRole] = useState<AppRole | null>(null);
@@ -144,312 +133,344 @@ export default function TrackManPage() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
-
-  const [dataError, setDataError] = useState('');
 
   const [events, setEvents] = useState<EventItem[]>([]);
+  const [users, setUsers] = useState<RoleUser[]>([]);
+  const [eventUsers, setEventUsers] = useState<EventUser[]>([]);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+
+  const [publicSlug, setPublicSlug] = useState('');
   const [selectedEventId, setSelectedEventId] = useState('');
 
   const [eventName, setEventName] = useState('');
-  const [eventSlug, setEventSlug] = useState('');
-  const [eventPlannerEmail, setEventPlannerEmail] = useState('');
+  const [eventLocation, setEventLocation] = useState('');
+  const [eventDate, setEventDate] = useState('');
+  const [eventManagerEmail, setEventManagerEmail] = useState('');
 
-  const [participants, setParticipants] = useState<Participant[]>([]);
-  const [participantName, setParticipantName] = useState('');
-  const [bikeNumber, setBikeNumber] = useState('');
+  const [newGlobalEmail, setNewGlobalEmail] = useState('');
+  const [newGlobalPassword, setNewGlobalPassword] = useState('');
+  const [newGlobalRole, setNewGlobalRole] = useState<AppRole>('reception');
 
-  const [userList, setUserList] = useState<RoleUser[]>([]);
-  const [newUserEmail, setNewUserEmail] = useState('');
-  const [newUserRole, setNewUserRole] = useState<AppRole>('reception');
-
-  const [eventUsers, setEventUsers] = useState<EventUser[]>([]);
+  const [assignEventId, setAssignEventId] = useState('');
   const [assignEmail, setAssignEmail] = useState('');
+  const [assignPassword, setAssignPassword] = useState('');
   const [assignRole, setAssignRole] = useState<AppRole>('reception');
 
-  const [publicEventSlug, setPublicEventSlug] = useState('');
+  const [participantEventId, setParticipantEventId] = useState('');
+  const [participantName, setParticipantName] = useState('');
+  const [participantContact, setParticipantContact] = useState('');
+  const [participantEmail, setParticipantEmail] = useState('');
+  const [participantBikeOwned, setParticipantBikeOwned] = useState('');
+
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
 
   useEffect(() => {
     setOrigin(window.location.origin);
     const params = new URLSearchParams(window.location.search);
-    setPublicEventSlug(params.get('event')?.toLowerCase() ?? '');
+    setPublicSlug(params.get('event')?.toLowerCase() ?? '');
   }, []);
 
   useEffect(() => {
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
+    const unsub = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
       if (!user?.email) {
         setGlobalRole(null);
         return;
       }
-
-      const profileRef = doc(db, 'users', emailKey(user.email));
-      return onSnapshot(profileRef, (profileSnap) => {
-        if (!profileSnap.exists()) {
+      return onSnapshot(doc(db, 'users', emailKey(user.email)), (snap) => {
+        if (!snap.exists()) {
           setGlobalRole(null);
           return;
         }
-        const profileData = profileSnap.data() as { role?: AppRole };
-        setGlobalRole(profileData.role ?? null);
+        const data = snap.data() as { role?: AppRole };
+        setGlobalRole(data.role ?? null);
       });
     });
-
-    return () => unsubAuth();
+    return () => unsub();
   }, []);
 
   useEffect(() => {
-    const eventsQuery = query(collection(db, 'events'), orderBy('createdAt', 'asc'));
-    const unsubEvents = onSnapshot(
-      eventsQuery,
-      (snap) => {
-        const rows: EventItem[] = snap.docs.map((item) => {
-          const data = item.data() as Omit<EventItem, 'id'>;
-          return {
-            id: item.id,
-            name: data.name,
-            slug: data.slug,
-            createdBy: data.createdBy,
-            plannerEmail: data.plannerEmail ?? '',
-            createdAt: Number(data.createdAt ?? Date.now()),
-          };
-        });
-        setEvents(rows);
-        if (!selectedEventId && rows.length > 0) {
-          setSelectedEventId(rows[0].id);
-        }
-      },
-      () => setDataError('unable to load events from database')
-    );
-
-    return () => unsubEvents();
-  }, [selectedEventId]);
-
-  useEffect(() => {
-    if (!selectedEventId) {
-      setParticipants([]);
-      return;
-    }
-
-    const participantQuery = query(collection(db, 'participants'), where('eventId', '==', selectedEventId));
-    const unsub = onSnapshot(
-      participantQuery,
-      (snap) => {
-        const rows: Participant[] = snap.docs
-          .map((item) => {
-            const data = item.data() as Omit<Participant, 'id'>;
-            return {
-              id: item.id,
-              eventId: data.eventId,
-              name: data.name,
-              bikeNumber: data.bikeNumber,
-              createdAt: Number(data.createdAt ?? Date.now()),
-              trainedAt: data.trainedAt,
-              gearAllocatedAt: data.gearAllocatedAt,
-              trackEnteredAt: data.trackEnteredAt,
-              trackExitedAt: data.trackExitedAt,
-              gearReturnedAt: data.gearReturnedAt,
-              gearItems: data.gearItems,
-            };
-          })
-          .sort((a, b) => a.createdAt - b.createdAt);
-
-        setParticipants(rows);
-      },
-      () => setDataError('unable to load participants from database')
-    );
-
-    return () => unsub();
-  }, [selectedEventId]);
-
-  useEffect(() => {
-    const usersQuery = query(collection(db, 'users'), orderBy('createdAt', 'asc'));
-    const unsub = onSnapshot(usersQuery, (snap) => {
-      const rows: RoleUser[] = snap.docs.map((item) => {
-        const data = item.data() as Omit<RoleUser, 'id'>;
+    const unsub = onSnapshot(query(collection(db, 'events'), orderBy('createdAt', 'asc')), (snap) => {
+      const rows: EventItem[] = snap.docs.map((d) => {
+        const data = d.data() as Omit<EventItem, 'id'>;
         return {
-          id: item.id,
+          id: d.id,
+          name: data.name,
+          location: data.location,
+          date: data.date,
+          slug: data.slug,
+          eventManagerEmail: data.eventManagerEmail ?? '',
+          createdBy: data.createdBy,
+          createdAt: Number(data.createdAt ?? Date.now()),
+        };
+      });
+      setEvents(rows);
+      if (!selectedEventId && rows.length > 0) setSelectedEventId(rows[0].id);
+      if (!assignEventId && rows.length > 0) setAssignEventId(rows[0].id);
+      if (!participantEventId && rows.length > 0) setParticipantEventId(rows[0].id);
+    });
+    return () => unsub();
+  }, [assignEventId, participantEventId, selectedEventId]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(query(collection(db, 'users'), orderBy('createdAt', 'asc')), (snap) => {
+      const rows: RoleUser[] = snap.docs.map((d) => {
+        const data = d.data() as Omit<RoleUser, 'id'>;
+        return {
+          id: d.id,
           email: data.email,
           role: data.role,
           createdAt: Number(data.createdAt ?? Date.now()),
         };
       });
-      setUserList(rows);
+      setUsers(rows);
     });
-
     return () => unsub();
   }, []);
 
   useEffect(() => {
-    if (!selectedEventId) {
-      setEventUsers([]);
-      return;
-    }
-
-    const assignQuery = query(collection(db, 'eventUsers'), where('eventId', '==', selectedEventId));
-    const unsub = onSnapshot(assignQuery, (snap) => {
-      const rows: EventUser[] = snap.docs.map((item) => {
-        const data = item.data() as Omit<EventUser, 'id'>;
+    const unsub = onSnapshot(collection(db, 'eventUsers'), (snap) => {
+      const rows: EventUser[] = snap.docs.map((d) => {
+        const data = d.data() as Omit<EventUser, 'id'>;
         return {
-          id: item.id,
+          id: d.id,
           eventId: data.eventId,
           email: data.email,
           role: data.role,
           createdAt: Number(data.createdAt ?? Date.now()),
         };
       });
-      setEventUsers(rows.sort((a, b) => a.createdAt - b.createdAt));
+      setEventUsers(rows);
     });
+    return () => unsub();
+  }, []);
 
+  useEffect(() => {
+    if (!selectedEventId) {
+      setParticipants([]);
+      return;
+    }
+    const q = query(collection(db, 'participants'), where('eventId', '==', selectedEventId));
+    const unsub = onSnapshot(q, (snap) => {
+      const rows: Participant[] = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as Omit<Participant, 'id'>) }))
+        .sort((a, b) => Number(a.createdAt) - Number(b.createdAt));
+      setParticipants(rows);
+    });
     return () => unsub();
   }, [selectedEventId]);
 
   useEffect(() => {
-    if (!publicEventSlug || events.length === 0) return;
-    const eventFromSlug = events.find((event) => event.slug === publicEventSlug);
-    if (eventFromSlug) {
-      setSelectedEventId(eventFromSlug.id);
-    }
-  }, [events, publicEventSlug]);
+    const event = events.find((item) => item.slug === publicSlug);
+    if (event) setSelectedEventId(event.id);
+  }, [events, publicSlug]);
 
-  const selectedEvent = useMemo(() => events.find((event) => event.id === selectedEventId) ?? null, [events, selectedEventId]);
+  const selectedEvent = useMemo(() => events.find((item) => item.id === selectedEventId) ?? null, [events, selectedEventId]);
 
+  const currentEmail = currentUser?.email?.toLowerCase() ?? '';
   const myEventRoles = useMemo(() => {
-    if (!currentUser?.email || !selectedEventId) return [] as AppRole[];
-    return eventUsers.filter((item) => item.email === currentUser.email?.toLowerCase()).map((item) => item.role);
-  }, [currentUser?.email, eventUsers, selectedEventId]);
+    if (!currentEmail) return [] as AppRole[];
+    return eventUsers.filter((item) => item.email === currentEmail).map((item) => item.role);
+  }, [currentEmail, eventUsers]);
 
   const effectiveRoles = useMemo(() => {
-    const roles = new Set<AppRole>();
-    if (globalRole) roles.add(globalRole);
-    myEventRoles.forEach((r) => roles.add(r));
-    return Array.from(roles);
+    const set = new Set<AppRole>();
+    if (globalRole) set.add(globalRole);
+    myEventRoles.forEach((r) => set.add(r));
+    return Array.from(set);
   }, [globalRole, myEventRoles]);
 
   const hasRole = (role: AppRole) => effectiveRoles.includes(role);
+
   const isAdmin = hasRole('admin');
   const isRcm = hasRole('rcm');
   const isEventManager = hasRole('event-manager');
+
   const canManageEvents = isAdmin || isRcm;
-  const canManageAssignments = isAdmin || isEventManager;
+  const canAssignTeam = isAdmin || isEventManager;
   const canReception = isAdmin || hasRole('reception');
   const canTrainer = isAdmin || hasRole('trainer');
   const canGear = isAdmin || hasRole('gear-manager');
   const canTrack = isAdmin || hasRole('track-manager');
 
-  const counts = useMemo(() => {
-    let registered = 0;
-    let trained = 0;
-    let gearAllocated = 0;
-    let onTrack = 0;
-    let exitedTrack = 0;
-    let returnedGears = 0;
+  const eventManagerOptions = users.filter((u) => u.role === 'event-manager');
 
-    participants.forEach((item) => {
-      const stage = participantStage(item);
-      if (stage === 'registered') registered += 1;
-      if (stage === 'trained') trained += 1;
-      if (stage === 'gear-allocated') gearAllocated += 1;
-      if (stage === 'on-track') onTrack += 1;
-      if (stage === 'exited-track') exitedTrack += 1;
-      if (stage === 'returned-gears') returnedGears += 1;
-    });
+  const publicEvent = useMemo(() => {
+    if (!publicSlug) return null;
+    return events.find((item) => item.slug === publicSlug) ?? null;
+  }, [events, publicSlug]);
 
-    return {
-      total: participants.length,
-      registered,
-      trained,
-      gearAllocated,
-      onTrack,
-      exitedTrack,
-      returnedGears,
-    };
-  }, [participants]);
+  const publicParticipants = useMemo(() => {
+    if (!publicEvent) return [];
+    return participants.filter((p) => p.eventId === publicEvent.id);
+  }, [participants, publicEvent]);
 
-  const handleSignIn = async () => {
-    if (!authEmail.trim() || !authPassword.trim()) {
-      setAuthError('enter email and password');
-      return;
-    }
+  const publicMetrics = useMemo(() => {
+    const totalRegistered = publicParticipants.length;
+    const totalTrained = publicParticipants.filter((p) => Boolean(p.trainedAt)).length;
+    const trackCompleted = publicParticipants.filter((p) => Boolean(p.trackExitedAt)).length;
+    const nextInLine = publicParticipants.filter((p) => p.gearAllocatedAt && !p.trackEnteredAt).slice(0, 5);
+    return { totalRegistered, totalTrained, trackCompleted, nextInLine };
+  }, [publicParticipants]);
 
+  const login = async () => {
+    if (!authEmail.trim() || !authPassword.trim()) return;
     try {
-      setAuthLoading(true);
       setAuthError('');
       await signInWithEmailAndPassword(auth, authEmail.trim(), authPassword);
-      setAuthPassword('');
-      setActiveView('console');
+      setTab('console');
     } catch {
-      setAuthError('login failed. check your email/password.');
-    } finally {
-      setAuthLoading(false);
+      setAuthError('login failed. check email/password');
     }
   };
 
-  const handleSignOut = async () => {
-    await signOut(auth);
+  const createAuthUser = async (email: string, password: string, role: AppRole) => {
+    if (!currentUser) {
+      setError('please login first');
+      return false;
+    }
+    if (!email.trim() || !password.trim()) {
+      setError('email and password are required');
+      return false;
+    }
+
+    const token = await currentUser.getIdToken();
+    const res = await fetch('/api/admin/create-user', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ email: email.trim().toLowerCase(), password, role }),
+    });
+
+    const data = (await res.json()) as { error?: string };
+    if (!res.ok) {
+      setError(data.error ?? 'could not create user');
+      return false;
+    }
+
+    return true;
   };
 
-  const resetEventFormFromSelected = () => {
-    if (!selectedEvent) return;
-    setEventName(selectedEvent.name);
-    setEventSlug(selectedEvent.slug);
-    setEventPlannerEmail(selectedEvent.plannerEmail ?? '');
+  const createGlobalUser = async () => {
+    setError('');
+    const ok = await createAuthUser(newGlobalEmail, newGlobalPassword, newGlobalRole);
+    if (!ok) return;
+    setNotice('user created in auth + roles');
+    setNewGlobalEmail('');
+    setNewGlobalPassword('');
+    setNewGlobalRole('reception');
+  };
+
+  const removeGlobalUser = async (id: string) => {
+    if (!isAdmin) return;
+    await deleteDoc(doc(db, 'users', id));
   };
 
   const createEvent = async () => {
-    if (!canManageEvents || !currentUser?.email) return;
-    const nextName = eventName.trim();
-    const nextSlug = toSlug(eventSlug || eventName);
-    if (!nextName || !nextSlug) return;
+    if (!canManageEvents || !currentEmail) return;
+    setError('');
+    const slug = toSlug(eventName);
+    if (!eventName.trim() || !eventLocation.trim() || !eventDate.trim() || !eventManagerEmail.trim()) {
+      setError('event name, location, date, and event manager are required');
+      return;
+    }
 
     await addDoc(collection(db, 'events'), {
-      name: nextName,
-      slug: nextSlug,
-      plannerEmail: eventPlannerEmail.trim().toLowerCase(),
-      createdBy: currentUser.email.toLowerCase(),
+      name: eventName.trim(),
+      location: eventLocation.trim(),
+      date: eventDate,
+      slug,
+      eventManagerEmail: eventManagerEmail.trim().toLowerCase(),
+      createdBy: currentEmail,
       createdAt: Date.now(),
     });
 
+    setNotice('event created');
     setEventName('');
-    setEventSlug('');
-    setEventPlannerEmail('');
+    setEventLocation('');
+    setEventDate('');
+    setEventManagerEmail('');
   };
 
-  const updateEventDetails = async () => {
-    if (!selectedEvent || !currentUser?.email) return;
-
-    const owner = selectedEvent.createdBy === currentUser.email.toLowerCase();
-    if (!isAdmin && !(isRcm && owner)) return;
+  const updateSelectedEvent = async () => {
+    if (!selectedEvent || !currentEmail) return;
+    const owner = selectedEvent.createdBy === currentEmail;
+    if (!isAdmin && !(isRcm && owner)) {
+      setError('you can only edit events created by you');
+      return;
+    }
 
     await updateDoc(doc(db, 'events', selectedEvent.id), {
       name: eventName.trim() || selectedEvent.name,
-      slug: toSlug(eventSlug || selectedEvent.slug),
-      plannerEmail: eventPlannerEmail.trim().toLowerCase(),
+      location: eventLocation.trim() || selectedEvent.location,
+      date: eventDate || selectedEvent.date,
+      eventManagerEmail: (eventManagerEmail.trim() || selectedEvent.eventManagerEmail).toLowerCase(),
+      slug: toSlug(eventName.trim() || selectedEvent.name),
     });
+    setNotice('event updated');
   };
 
-  const deleteEvent = async () => {
-    if (!selectedEvent || !currentUser?.email) return;
-
-    const owner = selectedEvent.createdBy === currentUser.email.toLowerCase();
-    if (!isAdmin && !(isRcm && owner)) return;
-
-    await deleteDoc(doc(db, 'events', selectedEvent.id));
-    setSelectedEventId('');
+  const loadSelectedEvent = () => {
+    if (!selectedEvent) return;
+    setEventName(selectedEvent.name);
+    setEventLocation(selectedEvent.location);
+    setEventDate(selectedEvent.date);
+    setEventManagerEmail(selectedEvent.eventManagerEmail);
   };
 
-  const registerParticipant = async () => {
-    if (!selectedEventId || !canReception) return;
-    if (!participantName.trim() || !bikeNumber.trim()) return;
+  const assignUserToEvent = async () => {
+    if (!canAssignTeam || !assignEventId) return;
+    setError('');
+    let userEmail = assignEmail.trim().toLowerCase();
 
-    await addDoc(collection(db, 'participants'), {
-      eventId: selectedEventId,
-      name: participantName.trim(),
-      bikeNumber: bikeNumber.trim(),
+    if (!userEmail || !assignRole) {
+      setError('event, email, role required');
+      return;
+    }
+
+    if (assignPassword.trim()) {
+      const ok = await createAuthUser(userEmail, assignPassword, assignRole);
+      if (!ok) return;
+    }
+
+    const id = `${assignEventId}__${emailKey(userEmail)}`;
+    await setDoc(doc(db, 'eventUsers', id), {
+      eventId: assignEventId,
+      email: userEmail,
+      role: assignRole,
       createdAt: Date.now(),
     });
 
+    setNotice('user assigned to event');
+    setAssignEmail('');
+    setAssignPassword('');
+    setAssignRole('reception');
+  };
+
+  const registerParticipant = async () => {
+    if (!canReception || !participantEventId) return;
+    if (!participantName.trim() || !participantContact.trim() || !participantEmail.trim() || !participantBikeOwned.trim()) {
+      setError('all participant fields are required');
+      return;
+    }
+
+    await addDoc(collection(db, 'participants'), {
+      eventId: participantEventId,
+      name: participantName.trim(),
+      contactNumber: participantContact.trim(),
+      email: participantEmail.trim().toLowerCase(),
+      bikeOwned: participantBikeOwned.trim(),
+      createdAt: Date.now(),
+    });
+
+    setNotice('participant registered');
     setParticipantName('');
-    setBikeNumber('');
+    setParticipantContact('');
+    setParticipantEmail('');
+    setParticipantBikeOwned('');
   };
 
   const markTrained = async (id: string) => {
@@ -457,17 +478,9 @@ export default function TrackManPage() {
     await updateDoc(doc(db, 'participants', id), { trainedAt: Date.now() });
   };
 
-  const allocateGears = async (id: string) => {
+  const allocateGear = async (id: string) => {
     if (!canGear) return;
-    await updateDoc(doc(db, 'participants', id), {
-      gearAllocatedAt: Date.now(),
-      gearItems: {
-        gloves: true,
-        jacket: true,
-        helmet: true,
-        kneeGuard: true,
-      },
-    });
+    await updateDoc(doc(db, 'participants', id), { gearAllocatedAt: Date.now() });
   };
 
   const markTrackEntry = async (id: string) => {
@@ -485,46 +498,6 @@ export default function TrackManPage() {
     await updateDoc(doc(db, 'participants', id), { gearReturnedAt: Date.now() });
   };
 
-  const saveGlobalUser = async () => {
-    if (!isAdmin) return;
-    if (!newUserEmail.trim()) return;
-
-    await setDoc(doc(db, 'users', emailKey(newUserEmail)), {
-      email: newUserEmail.trim().toLowerCase(),
-      role: newUserRole,
-      createdAt: Date.now(),
-    });
-
-    setNewUserEmail('');
-    setNewUserRole('reception');
-  };
-
-  const removeGlobalUser = async (id: string) => {
-    if (!isAdmin) return;
-    await deleteDoc(doc(db, 'users', id));
-  };
-
-  const saveEventAssignment = async () => {
-    if (!canManageAssignments || !selectedEventId) return;
-    if (!assignEmail.trim()) return;
-
-    const id = `${selectedEventId}__${emailKey(assignEmail)}`;
-    await setDoc(doc(db, 'eventUsers', id), {
-      eventId: selectedEventId,
-      email: assignEmail.trim().toLowerCase(),
-      role: assignRole,
-      createdAt: Date.now(),
-    });
-
-    setAssignEmail('');
-    setAssignRole('reception');
-  };
-
-  const removeEventAssignment = async (id: string) => {
-    if (!canManageAssignments) return;
-    await deleteDoc(doc(db, 'eventUsers', id));
-  };
-
   const exportCsv = async (scope: 'total' | 'event') => {
     if (!isAdmin) return;
 
@@ -538,12 +511,12 @@ export default function TrackManPage() {
     }
 
     const eventMap = new Map(events.map((event) => [event.id, event.name]));
-
     const header = [
       'event',
       'name',
-      'bike_number',
-      'stage',
+      'contact_number',
+      'email',
+      'bike_owned',
       'registered_at',
       'trained_at',
       'gear_allocated_at',
@@ -554,21 +527,21 @@ export default function TrackManPage() {
 
     const lines = rows
       .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
-      .map((item) => {
-        const stage = participantStage(item);
-        return [
+      .map((item) =>
+        [
           csvEscape(eventMap.get(item.eventId) ?? item.eventId),
-          csvEscape(item.name ?? ''),
-          csvEscape(item.bikeNumber ?? ''),
-          csvEscape(stageLabel(stage)),
+          csvEscape(item.name),
+          csvEscape(item.contactNumber),
+          csvEscape(item.email),
+          csvEscape(item.bikeOwned),
           csvEscape(item.createdAt ?? ''),
           csvEscape(item.trainedAt ?? ''),
           csvEscape(item.gearAllocatedAt ?? ''),
           csvEscape(item.trackEnteredAt ?? ''),
           csvEscape(item.trackExitedAt ?? ''),
           csvEscape(item.gearReturnedAt ?? ''),
-        ].join(',');
-      });
+        ].join(',')
+      );
 
     const csvText = `${header.join(',')}\n${lines.join('\n')}`;
     const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
@@ -580,124 +553,103 @@ export default function TrackManPage() {
     URL.revokeObjectURL(url);
   };
 
-  const publicEvent = useMemo(() => {
-    if (!publicEventSlug) return null;
-    return events.find((event) => event.slug === publicEventSlug) ?? null;
-  }, [events, publicEventSlug]);
+  const visibleParticipants = participants;
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#f4f9ff_0%,_#ecf4ff_40%,_#e6f0ff_70%,_#dce9ff_100%)] px-4 py-8 font-[family-name:var(--font-manrope)] text-slate-800 md:px-8">
-      <div className="mx-auto max-w-6xl space-y-6">
-        <section className="rounded-3xl border border-sky-100 bg-white/80 p-6 shadow-lg shadow-sky-100/80 backdrop-blur-md md:p-8">
-          <p className="text-xs uppercase tracking-[0.2em] text-sky-700">event control center</p>
-          <div className="mt-2 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+    <main className="min-h-screen bg-slate-50 px-4 py-8 font-[family-name:var(--font-manrope)] text-slate-900 md:px-8">
+      <div className="mx-auto max-w-5xl space-y-4">
+        <section className="rounded-2xl border border-slate-200 bg-white p-6">
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">track man</p>
+          <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h1 className="font-[family-name:var(--font-space-grotesk)] text-4xl font-bold text-slate-900 md:text-5xl">
-                Track Man
-              </h1>
-              <p className="mt-2 text-slate-600">event-based participant flow</p>
+              <h1 className="font-[family-name:var(--font-space-grotesk)] text-4xl font-semibold">event operations</h1>
+              <p className="text-sm text-slate-500">clean role-based flow for events</p>
             </div>
-            <div className="flex gap-2">
-              <Button
-                radius="full"
-                color={activeView === 'public' ? 'primary' : 'default'}
-                variant={activeView === 'public' ? 'solid' : 'bordered'}
-                onPress={() => setActiveView('public')}
-              >
-                Public
-              </Button>
-              <Button
-                radius="full"
-                color={activeView === 'console' ? 'primary' : 'default'}
-                variant={activeView === 'console' ? 'solid' : 'bordered'}
-                onPress={() => setActiveView('console')}
-              >
-                Console
-              </Button>
-            </div>
+            <Tabs
+              selectedKey={tab}
+              onSelectionChange={(key) => setTab(key as 'public' | 'console')}
+              variant="bordered"
+              radius="full"
+            >
+              <Tab key="public" title="Public" />
+              <Tab key="console" title="Console" />
+            </Tabs>
           </div>
         </section>
 
-        {dataError ? (
-          <Card className="border border-rose-200 bg-rose-50/80">
-            <CardBody>
-              <p className="text-rose-700">{dataError}</p>
-            </CardBody>
+        {notice ? (
+          <Card className="border border-emerald-200 bg-emerald-50">
+            <CardBody className="text-sm text-emerald-700">{notice}</CardBody>
           </Card>
         ) : null}
 
-        {activeView === 'public' ? (
+        {error ? (
+          <Card className="border border-rose-200 bg-rose-50">
+            <CardBody className="text-sm text-rose-700">{error}</CardBody>
+          </Card>
+        ) : null}
+
+        {tab === 'public' ? (
           <section className="space-y-4">
-            {!publicEventSlug ? (
-              <Card className="border border-amber-200 bg-amber-50/80">
-                <CardBody>
-                  <p className="text-amber-800">
-                    no standard public dashboard. open a custom event link like <span className="font-semibold">{origin}/?event=event-slug</span>.
-                  </p>
+            {!publicSlug ? (
+              <Card className="border border-slate-200 bg-white">
+                <CardBody className="text-sm text-slate-600">
+                  public dashboard works only with event link: <span className="font-medium">{origin}/?event=event-slug</span>
                 </CardBody>
               </Card>
             ) : !publicEvent ? (
-              <Card className="border border-rose-200 bg-rose-50/80">
-                <CardBody>
-                  <p className="text-rose-700">this event link is invalid or event is not created yet.</p>
-                </CardBody>
+              <Card className="border border-rose-200 bg-rose-50">
+                <CardBody className="text-sm text-rose-700">event not found for this link</CardBody>
               </Card>
             ) : (
               <>
-                <Card className="border border-sky-100 bg-white/90">
+                <Card className="border border-slate-200 bg-white">
                   <CardHeader>
                     <div>
-                      <h2 className="text-2xl font-semibold text-slate-900">{publicEvent.name}</h2>
-                      <p className="text-sm text-slate-600">live status board</p>
+                      <h2 className="text-2xl font-semibold">{publicEvent.name}</h2>
+                      <p className="text-sm text-slate-500">
+                        {publicEvent.location} - {publicEvent.date}
+                      </p>
                     </div>
                   </CardHeader>
                 </Card>
 
-                <div className="grid gap-4 md:grid-cols-3">
-                  <Card className="border border-sky-100 bg-white/90">
-                    <CardHeader className="pb-0 text-sm text-slate-500">Total</CardHeader>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <Card className="border border-slate-200 bg-white">
                     <CardBody>
-                      <p className="text-4xl font-bold text-slate-900">{counts.total}</p>
+                      <p className="text-sm text-slate-500">total registered</p>
+                      <p className="text-3xl font-semibold">{publicMetrics.totalRegistered}</p>
                     </CardBody>
                   </Card>
-                  <Card className="border border-amber-100 bg-white/90">
-                    <CardHeader className="pb-0 text-sm text-slate-500">Registered</CardHeader>
+                  <Card className="border border-slate-200 bg-white">
                     <CardBody>
-                      <p className="text-4xl font-bold text-amber-700">{counts.registered}</p>
+                      <p className="text-sm text-slate-500">total trained</p>
+                      <p className="text-3xl font-semibold">{publicMetrics.totalTrained}</p>
                     </CardBody>
                   </Card>
-                  <Card className="border border-indigo-100 bg-white/90">
-                    <CardHeader className="pb-0 text-sm text-slate-500">Returned Gears</CardHeader>
+                  <Card className="border border-slate-200 bg-white">
                     <CardBody>
-                      <p className="text-4xl font-bold text-indigo-700">{counts.returnedGears}</p>
+                      <p className="text-sm text-slate-500">track completed</p>
+                      <p className="text-3xl font-semibold">{publicMetrics.trackCompleted}</p>
                     </CardBody>
                   </Card>
                 </div>
 
-                <Card className="border border-sky-100 bg-white/90">
+                <Card className="border border-slate-200 bg-white">
                   <CardHeader>
-                    <h3 className="text-xl font-semibold text-slate-900">Latest Participants</h3>
+                    <h3 className="text-lg font-semibold">next 5 in line</h3>
                   </CardHeader>
                   <Divider />
                   <CardBody className="space-y-2">
-                    {participants.length === 0 ? (
-                      <p className="text-slate-500">no participants yet</p>
+                    {publicMetrics.nextInLine.length === 0 ? (
+                      <p className="text-sm text-slate-500">no one in line yet</p>
                     ) : (
-                      participants.slice(-10).reverse().map((item) => {
-                        const stage = participantStage(item);
-                        return (
-                          <div
-                            key={item.id}
-                            className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-4 py-3"
-                          >
-                            <div>
-                              <p className="font-medium text-slate-900">{item.name}</p>
-                              <p className="text-xs text-slate-500">bike #{item.bikeNumber}</p>
-                            </div>
-                            <Chip variant="flat">{stageLabel(stage)}</Chip>
-                          </div>
-                        );
-                      })
+                      publicMetrics.nextInLine.map((item) => (
+                        <div key={item.id} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2">
+                          <p className="font-medium">{item.name}</p>
+                          <Chip variant="flat">{item.bikeOwned}</Chip>
+                        </div>
+                      ))
                     )}
                   </CardBody>
                 </Card>
@@ -707,58 +659,206 @@ export default function TrackManPage() {
         ) : (
           <section className="space-y-4">
             {!currentUser ? (
-              <Card className="mx-auto w-full max-w-md border border-sky-100 bg-white/90">
+              <Card className="mx-auto max-w-md border border-slate-200 bg-white">
                 <CardHeader>
-                  <h2 className="text-2xl font-semibold text-slate-900">Login</h2>
+                  <h2 className="text-xl font-semibold">login</h2>
                 </CardHeader>
-                <CardBody className="space-y-4">
+                <CardBody className="space-y-3">
                   <Input label="email" type="email" value={authEmail} onValueChange={setAuthEmail} />
                   <Input label="password" type="password" value={authPassword} onValueChange={setAuthPassword} />
                   {authError ? <p className="text-sm text-rose-600">{authError}</p> : null}
-                  <Button color="primary" isLoading={authLoading} onPress={handleSignIn}>
+                  <Button color="primary" onPress={login}>
                     Sign In
                   </Button>
                 </CardBody>
               </Card>
             ) : (
               <>
-                <Card className="border border-sky-100 bg-white/90">
+                <Card className="border border-slate-200 bg-white">
                   <CardHeader className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-2xl font-semibold text-slate-900">Console</h2>
-                      <p className="text-sm text-slate-600">{currentUser.email}</p>
+                      <h2 className="text-xl font-semibold">console</h2>
+                      <p className="text-sm text-slate-500">{currentUser.email}</p>
                     </div>
                     <div className="flex items-center gap-2">
                       {effectiveRoles.length === 0 ? (
-                        <Chip color="warning" variant="flat">
-                          no role assigned
+                        <Chip variant="flat" color="warning">
+                          no roles assigned
                         </Chip>
                       ) : (
                         effectiveRoles.map((role) => (
-                          <Chip key={role} color="primary" variant="flat">
+                          <Chip key={role} variant="flat" color="primary">
                             {roleLabel(role)}
                           </Chip>
                         ))
                       )}
-                      <Button size="sm" variant="flat" onPress={handleSignOut}>
+                      <Button variant="flat" onPress={() => signOut(auth)}>
                         Sign Out
                       </Button>
                     </div>
                   </CardHeader>
                 </Card>
 
-                <Card className="border border-sky-100 bg-white/90">
+                <Card className="border border-slate-200 bg-white">
                   <CardHeader>
-                    <h3 className="text-xl font-semibold text-slate-900">Select Event</h3>
+                    <h3 className="text-lg font-semibold">selected event</h3>
                   </CardHeader>
-                  <Divider />
-                  <CardBody className="space-y-3">
+                  <CardBody className="space-y-2">
                     <Select
                       label="event"
                       selectedKeys={selectedEventId ? [selectedEventId] : []}
                       onSelectionChange={(keys) => {
                         const first = Array.from(keys)[0];
+                        if (typeof first === 'string') setSelectedEventId(first);
+                      }}
+                    >
+                      {events.map((event) => (
+                        <SelectItem key={event.id}>{event.name}</SelectItem>
+                      ))}
+                    </Select>
+                    {selectedEvent ? (
+                      <p className="text-sm text-slate-500">public link: {origin}/?event={selectedEvent.slug}</p>
+                    ) : null}
+                  </CardBody>
+                </Card>
+
+                {isAdmin ? (
+                  <Card className="border border-slate-200 bg-white">
+                    <CardHeader>
+                      <h3 className="text-lg font-semibold">create user (auth + role)</h3>
+                    </CardHeader>
+                    <CardBody className="grid gap-3 md:grid-cols-4">
+                      <Input label="email" value={newGlobalEmail} onValueChange={setNewGlobalEmail} />
+                      <Input label="password" type="password" value={newGlobalPassword} onValueChange={setNewGlobalPassword} />
+                      <Select
+                        label="role"
+                        selectedKeys={[newGlobalRole]}
+                        onSelectionChange={(keys) => {
+                          const first = Array.from(keys)[0];
+                          if (typeof first === 'string') setNewGlobalRole(first as AppRole);
+                        }}
+                      >
+                        {roleOptions.map((option) => (
+                          <SelectItem key={option.key}>{option.label}</SelectItem>
+                        ))}
+                      </Select>
+                      <Button className="md:mt-6" color="primary" onPress={createGlobalUser}>
+                        Create User
+                      </Button>
+                    </CardBody>
+
+                    <CardBody className="pt-0">
+                      <div className="space-y-2">
+                        {users.map((item) => (
+                          <div key={item.id} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2">
+                            <div>
+                              <p className="font-medium">{item.email}</p>
+                              <p className="text-xs text-slate-500">{roleLabel(item.role)}</p>
+                            </div>
+                            <Button size="sm" color="danger" variant="flat" onPress={() => removeGlobalUser(item.id)}>
+                              Remove Role
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </CardBody>
+                  </Card>
+                ) : null}
+
+                {canManageEvents ? (
+                  <Card className="border border-slate-200 bg-white">
+                    <CardHeader>
+                      <h3 className="text-lg font-semibold">create / update event</h3>
+                    </CardHeader>
+                    <CardBody className="grid gap-3 md:grid-cols-4">
+                      <Input label="event name" value={eventName} onValueChange={setEventName} />
+                      <Input label="event location" value={eventLocation} onValueChange={setEventLocation} />
+                      <Input label="date" type="date" value={eventDate} onValueChange={setEventDate} />
+                      <Select
+                        label="event manager"
+                        selectedKeys={eventManagerEmail ? [eventManagerEmail] : []}
+                        onSelectionChange={(keys) => {
+                          const first = Array.from(keys)[0];
+                          if (typeof first === 'string') setEventManagerEmail(first);
+                        }}
+                      >
+                        {eventManagerOptions.map((option) => (
+                          <SelectItem key={option.email}>{option.email}</SelectItem>
+                        ))}
+                      </Select>
+                    </CardBody>
+                    <CardBody className="pt-0">
+                      <div className="flex flex-wrap gap-2">
+                        <Button color="primary" onPress={createEvent}>
+                          Create Event
+                        </Button>
+                        <Button variant="flat" onPress={loadSelectedEvent}>
+                          Load Selected
+                        </Button>
+                        <Button variant="flat" color="warning" onPress={updateSelectedEvent}>
+                          Update Selected
+                        </Button>
+                      </div>
+                    </CardBody>
+                  </Card>
+                ) : null}
+
+                {canAssignTeam ? (
+                  <Card className="border border-slate-200 bg-white">
+                    <CardHeader>
+                      <h3 className="text-lg font-semibold">assign event team</h3>
+                    </CardHeader>
+                    <CardBody className="grid gap-3 md:grid-cols-5">
+                      <Select
+                        label="event"
+                        selectedKeys={assignEventId ? [assignEventId] : []}
+                        onSelectionChange={(keys) => {
+                          const first = Array.from(keys)[0];
+                          if (typeof first === 'string') setAssignEventId(first);
+                        }}
+                      >
+                        {events.map((event) => (
+                          <SelectItem key={event.id}>{event.name}</SelectItem>
+                        ))}
+                      </Select>
+                      <Input label="user email" value={assignEmail} onValueChange={setAssignEmail} />
+                      <Input
+                        label="password (optional new user)"
+                        type="password"
+                        value={assignPassword}
+                        onValueChange={setAssignPassword}
+                      />
+                      <Select
+                        label="role"
+                        selectedKeys={[assignRole]}
+                        onSelectionChange={(keys) => {
+                          const first = Array.from(keys)[0];
+                          if (typeof first === 'string') setAssignRole(first as AppRole);
+                        }}
+                      >
+                        {teamAssignableRoles.map((role) => (
+                          <SelectItem key={role}>{roleLabel(role)}</SelectItem>
+                        ))}
+                      </Select>
+                      <Button className="md:mt-6" color="primary" onPress={assignUserToEvent}>
+                        Assign
+                      </Button>
+                    </CardBody>
+                  </Card>
+                ) : null}
+
+                <Card className="border border-slate-200 bg-white">
+                  <CardHeader>
+                    <h3 className="text-lg font-semibold">register participant</h3>
+                  </CardHeader>
+                  <CardBody className="grid gap-3 md:grid-cols-5">
+                    <Select
+                      label="event"
+                      selectedKeys={participantEventId ? [participantEventId] : []}
+                      onSelectionChange={(keys) => {
+                        const first = Array.from(keys)[0];
                         if (typeof first === 'string') {
+                          setParticipantEventId(first);
                           setSelectedEventId(first);
                         }
                       }}
@@ -767,267 +867,84 @@ export default function TrackManPage() {
                         <SelectItem key={event.id}>{event.name}</SelectItem>
                       ))}
                     </Select>
-                    {selectedEvent ? (
-                      <p className="text-sm text-slate-600">
-                        public link: <span className="font-medium">{origin}/?event={selectedEvent.slug}</span>
-                      </p>
-                    ) : null}
+                    <Input label="name" value={participantName} onValueChange={setParticipantName} />
+                    <Input label="contact number" value={participantContact} onValueChange={setParticipantContact} />
+                    <Input label="email id" type="email" value={participantEmail} onValueChange={setParticipantEmail} />
+                    <Input label="bike owned" value={participantBikeOwned} onValueChange={setParticipantBikeOwned} />
+                  </CardBody>
+                  <CardBody className="pt-0">
+                    <Button color="primary" onPress={registerParticipant} isDisabled={!canReception}>
+                      Register Participant
+                    </Button>
                   </CardBody>
                 </Card>
 
-                {canManageEvents ? (
-                  <Card className="border border-cyan-100 bg-white/90">
-                    <CardHeader>
-                      <h3 className="text-xl font-semibold text-slate-900">Event Setup (Admin/RCM)</h3>
-                    </CardHeader>
-                    <Divider />
-                    <CardBody className="space-y-3">
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <Input label="event name" value={eventName} onValueChange={setEventName} />
-                        <Input label="event slug" value={eventSlug} onValueChange={setEventSlug} />
-                        <Input label="event manager email" value={eventPlannerEmail} onValueChange={setEventPlannerEmail} />
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button color="primary" onPress={createEvent}>
-                          Create Event
-                        </Button>
-                        <Button variant="flat" onPress={resetEventFormFromSelected}>
-                          Load Selected
-                        </Button>
-                        <Button color="warning" variant="flat" onPress={updateEventDetails}>
-                          Update Selected
-                        </Button>
-                        <Button color="danger" variant="flat" onPress={deleteEvent}>
-                          Delete Selected
-                        </Button>
-                      </div>
-                    </CardBody>
-                  </Card>
-                ) : null}
-
-                {isAdmin ? (
-                  <Card className="border border-cyan-100 bg-white/90">
-                    <CardHeader>
-                      <h3 className="text-xl font-semibold text-slate-900">Global Users (Admin)</h3>
-                    </CardHeader>
-                    <Divider />
-                    <CardBody className="space-y-3">
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <Input label="user email" value={newUserEmail} onValueChange={setNewUserEmail} />
-                        <Select
-                          label="global role"
-                          selectedKeys={[newUserRole]}
-                          onSelectionChange={(keys) => {
-                            const first = Array.from(keys)[0];
-                            if (typeof first === 'string') {
-                              setNewUserRole(first as AppRole);
-                            }
-                          }}
-                        >
-                          {roleOptions.map((option) => (
-                            <SelectItem key={option.key}>{option.label}</SelectItem>
-                          ))}
-                        </Select>
-                        <Button className="md:mt-6" color="primary" onPress={saveGlobalUser}>
-                          Add Or Update User
-                        </Button>
-                      </div>
-
-                      <div className="space-y-2">
-                        {userList.length === 0 ? (
-                          <p className="text-slate-500">no users yet</p>
-                        ) : (
-                          userList.map((item) => (
-                            <div
-                              key={item.id}
-                              className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"
-                            >
-                              <div>
-                                <p className="font-medium text-slate-900">{item.email}</p>
-                                <p className="text-xs text-slate-500">{roleLabel(item.role)}</p>
-                              </div>
-                              <Button size="sm" color="danger" variant="flat" onPress={() => removeGlobalUser(item.id)}>
-                                Remove
-                              </Button>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </CardBody>
-                  </Card>
-                ) : null}
-
-                {canManageAssignments && selectedEvent ? (
-                  <Card className="border border-blue-100 bg-white/90">
-                    <CardHeader>
-                      <h3 className="text-xl font-semibold text-slate-900">Event Team Assignment</h3>
-                    </CardHeader>
-                    <Divider />
-                    <CardBody className="space-y-3">
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <Input label="email" value={assignEmail} onValueChange={setAssignEmail} />
-                        <Select
-                          label="role"
-                          selectedKeys={[assignRole]}
-                          onSelectionChange={(keys) => {
-                            const first = Array.from(keys)[0];
-                            if (typeof first === 'string') {
-                              setAssignRole(first as AppRole);
-                            }
-                          }}
-                        >
-                          {roleOptions
-                            .filter((item) => item.key !== 'admin' && item.key !== 'rcm')
-                            .map((option) => (
-                              <SelectItem key={option.key}>{option.label}</SelectItem>
-                            ))}
-                        </Select>
-                        <Button className="md:mt-6" color="primary" onPress={saveEventAssignment}>
-                          Assign To Event
-                        </Button>
-                      </div>
-
-                      <div className="space-y-2">
-                        {eventUsers.length === 0 ? (
-                          <p className="text-slate-500">no one assigned to this event yet</p>
-                        ) : (
-                          eventUsers.map((item) => (
-                            <div
-                              key={item.id}
-                              className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"
-                            >
-                              <div>
-                                <p className="font-medium text-slate-900">{item.email}</p>
-                                <p className="text-xs text-slate-500">{roleLabel(item.role)}</p>
-                              </div>
-                              <Button size="sm" color="danger" variant="flat" onPress={() => removeEventAssignment(item.id)}>
-                                Remove
-                              </Button>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </CardBody>
-                  </Card>
-                ) : null}
-
-                <Card className="border border-sky-100 bg-white/90">
+                <Card className="border border-slate-200 bg-white">
                   <CardHeader>
-                    <h3 className="text-xl font-semibold text-slate-900">Participant Pipeline</h3>
+                    <h3 className="text-lg font-semibold">participant flow</h3>
                   </CardHeader>
                   <Divider />
-                  <CardBody className="space-y-4">
-                    {canReception ? (
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <Input label="participant name" value={participantName} onValueChange={setParticipantName} />
-                        <Input label="bike number" value={bikeNumber} onValueChange={setBikeNumber} />
-                        <Button className="md:mt-6" color="primary" onPress={registerParticipant}>
-                          Register Participant
-                        </Button>
-                      </div>
+                  <CardBody className="space-y-2">
+                    {visibleParticipants.length === 0 ? (
+                      <p className="text-sm text-slate-500">no participants in selected event</p>
                     ) : (
-                      <p className="text-sm text-slate-500">you can view participants, but registration needs reception/admin role.</p>
+                      visibleParticipants.map((item) => (
+                        <div key={item.id} className="space-y-2 rounded-lg border border-slate-200 p-3 md:flex md:items-center md:justify-between md:space-y-0">
+                          <div>
+                            <p className="font-medium">{item.name}</p>
+                            <p className="text-xs text-slate-500">
+                              {item.contactNumber} - {item.email} - bike: {item.bikeOwned}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Chip variant="flat">{stage(item)}</Chip>
+                            {!item.trainedAt ? (
+                              <Button size="sm" variant="flat" onPress={() => markTrained(item.id)} isDisabled={!canTrainer}>
+                                trained
+                              </Button>
+                            ) : null}
+                            {item.trainedAt && !item.gearAllocatedAt ? (
+                              <Button size="sm" variant="flat" onPress={() => allocateGear(item.id)} isDisabled={!canGear}>
+                                allocate gear
+                              </Button>
+                            ) : null}
+                            {item.gearAllocatedAt && !item.trackEnteredAt ? (
+                              <Button size="sm" variant="flat" onPress={() => markTrackEntry(item.id)} isDisabled={!canTrack}>
+                                track entry
+                              </Button>
+                            ) : null}
+                            {item.trackEnteredAt && !item.trackExitedAt ? (
+                              <Button size="sm" variant="flat" onPress={() => markTrackExit(item.id)} isDisabled={!canTrack}>
+                                track exit
+                              </Button>
+                            ) : null}
+                            {item.trackExitedAt && !item.gearReturnedAt ? (
+                              <Button size="sm" variant="flat" onPress={() => markGearReturn(item.id)} isDisabled={!canGear}>
+                                return gear
+                              </Button>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))
                     )}
-
-                    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-                      <Chip variant="flat">Total: {counts.total}</Chip>
-                      <Chip variant="flat">Registered: {counts.registered}</Chip>
-                      <Chip variant="flat">Trained: {counts.trained}</Chip>
-                      <Chip variant="flat">Gear: {counts.gearAllocated}</Chip>
-                      <Chip variant="flat">On Track: {counts.onTrack}</Chip>
-                      <Chip variant="flat">Returned: {counts.returnedGears}</Chip>
-                    </div>
-
-                    <div className="space-y-2">
-                      {participants.length === 0 ? (
-                        <p className="text-slate-500">no participants in this event yet</p>
-                      ) : (
-                        participants.map((item) => {
-                          const stage = participantStage(item);
-                          return (
-                            <div
-                              key={item.id}
-                              className="space-y-3 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 md:flex md:items-center md:justify-between md:space-y-0"
-                            >
-                              <div>
-                                <p className="font-medium text-slate-900">{item.name}</p>
-                                <p className="text-xs text-slate-500">bike #{item.bikeNumber}</p>
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Chip variant="flat">{stageLabel(stage)}</Chip>
-                                {canTrainer && !item.trainedAt ? (
-                                  <Button size="sm" variant="flat" color="secondary" onPress={() => markTrained(item.id)}>
-                                    Mark Trained
-                                  </Button>
-                                ) : null}
-                                {canGear && item.trainedAt && !item.gearAllocatedAt ? (
-                                  <Button size="sm" variant="flat" color="warning" onPress={() => allocateGears(item.id)}>
-                                    Allocate Gears
-                                  </Button>
-                                ) : null}
-                                {canTrack && item.gearAllocatedAt && !item.trackEnteredAt ? (
-                                  <Button size="sm" variant="flat" color="primary" onPress={() => markTrackEntry(item.id)}>
-                                    Enter Track
-                                  </Button>
-                                ) : null}
-                                {canTrack && item.trackEnteredAt && !item.trackExitedAt ? (
-                                  <Button size="sm" variant="flat" color="primary" onPress={() => markTrackExit(item.id)}>
-                                    Exit Track
-                                  </Button>
-                                ) : null}
-                                {canGear && item.trackExitedAt && !item.gearReturnedAt ? (
-                                  <Button size="sm" variant="flat" color="success" onPress={() => markGearReturn(item.id)}>
-                                    Return Gears
-                                  </Button>
-                                ) : null}
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
                   </CardBody>
                 </Card>
 
                 {isAdmin ? (
-                  <Card className="border border-emerald-100 bg-white/90">
+                  <Card className="border border-slate-200 bg-white">
                     <CardHeader>
-                      <h3 className="text-xl font-semibold text-slate-900">Export (Admin)</h3>
+                      <h3 className="text-lg font-semibold">download excel-ready csv</h3>
                     </CardHeader>
-                    <Divider />
-                    <CardBody className="space-y-3">
-                      <p className="text-sm text-slate-600">download csv and open in excel for event-wise or total report.</p>
-                      <div className="flex flex-wrap gap-2">
-                        <Button color="success" onPress={() => exportCsv('event')}>
-                          Download Selected Event CSV
-                        </Button>
-                        <Button variant="flat" onPress={() => exportCsv('total')}>
-                          Download Total CSV
-                        </Button>
-                      </div>
+                    <CardBody className="flex flex-wrap gap-2">
+                      <Button color="success" onPress={() => exportCsv('event')}>
+                        event wise csv
+                      </Button>
+                      <Button variant="flat" onPress={() => exportCsv('total')}>
+                        total csv
+                      </Button>
                     </CardBody>
                   </Card>
                 ) : null}
-
-                <Card className="border border-slate-200 bg-white/80">
-                  <CardHeader>
-                    <h3 className="text-lg font-semibold text-slate-900">what changed in this version</h3>
-                  </CardHeader>
-                  <CardBody>
-                    <Textarea
-                      isReadOnly
-                      minRows={5}
-                      value={[
-                        '- no self-signup on login page',
-                        '- event-specific public dashboard link: /?event=slug',
-                        '- roles: admin, rcm, event manager, reception, trainer, gear manager, track manager',
-                        '- admin user management + event team assignments',
-                        '- participant flow: register -> train -> allocate gear -> track in -> track out -> return gear',
-                        '- admin csv export: event-wise + total',
-                      ].join('\n')}
-                    />
-                  </CardBody>
-                </Card>
               </>
             )}
           </section>
