@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import {
   Button,
   Card,
@@ -14,6 +14,7 @@ import {
   Tabs,
   Tab,
 } from '@heroui/react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth';
 import {
   addDoc,
@@ -88,6 +89,8 @@ type ConsoleView =
   | 'manager-events'
   | 'manager-team';
 
+type IconProps = { className?: string };
+
 const roleOptions: { key: AppRole; label: string }[] = [
   { key: 'admin', label: 'Admin' },
   { key: 'rcm', label: 'RCM' },
@@ -99,6 +102,40 @@ const roleOptions: { key: AppRole; label: string }[] = [
 ];
 
 const managerProfileRoles: AppRole[] = ['reception', 'trainer', 'gear-manager', 'track-manager'];
+
+const sidebarIconClass = 'h-4 w-4 stroke-[1.7]';
+
+function IconGrid({ className = '' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" stroke="currentColor" />
+    </svg>
+  );
+}
+
+function IconUsers({ className = '' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path d="M16 19a4 4 0 1 0-8 0M12 11a3 3 0 1 0 0-6M20 19a3 3 0 0 0-3-3M17 8a2.5 2.5 0 1 0 0-5M4 19a3 3 0 0 1 3-3M7 8A2.5 2.5 0 1 1 7 3" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconCalendar({ className = '' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path d="M7 3v3M17 3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" stroke="currentColor" />
+    </svg>
+  );
+}
+
+function IconReport({ className = '' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path d="M6 3h9l3 3v15H6zM15 3v3h3M9 11h6M9 15h6" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 function emailKey(email: string): string {
   return email.trim().toLowerCase().replaceAll('.', ',');
@@ -133,6 +170,14 @@ function csvEscape(value: string | number): string {
   return text;
 }
 
+function isEventActive(eventDate: string): boolean {
+  if (!eventDate) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const candidate = new Date(`${eventDate}T00:00:00`);
+  return candidate >= today;
+}
+
 export default function TrackManPage() {
   const [origin, setOrigin] = useState('');
   const [tab, setTab] = useState<'public' | 'console'>('public');
@@ -151,6 +196,7 @@ export default function TrackManPage() {
   const [participants, setParticipants] = useState<Participant[]>([]);
 
   const [selectedEventId, setSelectedEventId] = useState('');
+  const [reportEventId, setReportEventId] = useState('');
   const [publicSlug, setPublicSlug] = useState('');
 
   const [eventName, setEventName] = useState('');
@@ -218,13 +264,16 @@ export default function TrackManPage() {
         };
       });
       setEvents(rows);
-      if (!selectedEventId && rows.length > 0) setSelectedEventId(rows[0].id);
-      if (!teamEventId && rows.length > 0) setTeamEventId(rows[0].id);
-      if (!participantEventId && rows.length > 0) setParticipantEventId(rows[0].id);
+      const activeRows = rows.filter((item) => isEventActive(item.date));
+      const archivedRows = rows.filter((item) => !isEventActive(item.date));
+      if (!selectedEventId && activeRows.length > 0) setSelectedEventId(activeRows[0].id);
+      if (!teamEventId && activeRows.length > 0) setTeamEventId(activeRows[0].id);
+      if (!participantEventId && activeRows.length > 0) setParticipantEventId(activeRows[0].id);
+      if (!reportEventId && archivedRows.length > 0) setReportEventId(archivedRows[0].id);
     });
 
     return () => unsub();
-  }, [participantEventId, selectedEventId, teamEventId]);
+  }, [participantEventId, reportEventId, selectedEventId, teamEventId]);
 
   useEffect(() => {
     const unsub = onSnapshot(query(collection(db, 'users'), orderBy('createdAt', 'asc')), (snap) => {
@@ -311,10 +360,13 @@ export default function TrackManPage() {
   const canTrack = isAdmin || hasRole('track-manager');
 
   const selectedEvent = useMemo(() => events.find((item) => item.id === selectedEventId) ?? null, [events, selectedEventId]);
+  const activeEvents = useMemo(() => events.filter((item) => isEventActive(item.date)), [events]);
+  const archivedEvents = useMemo(() => events.filter((item) => !isEventActive(item.date)), [events]);
   const managerEvents = useMemo(
     () => events.filter((item) => item.eventManagerEmail === currentEmail),
     [currentEmail, events]
   );
+  const managerActiveEvents = useMemo(() => managerEvents.filter((item) => isEventActive(item.date)), [managerEvents]);
 
   const canManageTeamForEvent = (eventId: string): boolean => {
     if (isAdmin) return true;
@@ -325,11 +377,11 @@ export default function TrackManPage() {
 
   useEffect(() => {
     if (!isEventManager) return;
-    if (managerEvents.length === 0) return;
-    if (!teamEventId || !managerEvents.some((item) => item.id === teamEventId)) {
-      setTeamEventId(managerEvents[0].id);
+    if (managerActiveEvents.length === 0) return;
+    if (!teamEventId || !managerActiveEvents.some((item) => item.id === teamEventId)) {
+      setTeamEventId(managerActiveEvents[0].id);
     }
-  }, [isEventManager, managerEvents, teamEventId]);
+  }, [isEventManager, managerActiveEvents, teamEventId]);
 
   const teamMembers = useMemo(() => {
     if (!teamEventId) return [] as EventUser[];
@@ -340,6 +392,7 @@ export default function TrackManPage() {
     if (!publicSlug) return null;
     return events.find((item) => item.slug === publicSlug) ?? null;
   }, [events, publicSlug]);
+  const isPublicEventOffline = Boolean(publicEvent && !isEventActive(publicEvent.date));
 
   const publicMetrics = useMemo(() => {
     const totalRegistered = participants.length;
@@ -361,6 +414,8 @@ export default function TrackManPage() {
     } catch {
       setAuthError('login failed. check email and password');
     }
+
+    return true;
   };
 
   const createAuthUser = async (email: string, password: string, role: AppRole): Promise<boolean> => {
@@ -571,12 +626,13 @@ export default function TrackManPage() {
     await updateDoc(doc(db, 'participants', id), { gearReturnedAt: Date.now() });
   };
 
-  const exportCsv = async (scope: 'total' | 'event') => {
+  const exportCsv = async (scope: 'total' | 'event', eventIdOverride?: string) => {
     if (!isAdmin) return;
 
     let rows: Participant[] = [];
-    if (scope === 'event' && selectedEventId) {
-      const snap = await getDocs(query(collection(db, 'participants'), where('eventId', '==', selectedEventId)));
+    const targetEventId = eventIdOverride || selectedEventId;
+    if (scope === 'event' && targetEventId) {
+      const snap = await getDocs(query(collection(db, 'participants'), where('eventId', '==', targetEventId)));
       rows = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Participant, 'id'>) }));
     } else {
       const snap = await getDocs(collection(db, 'participants'));
@@ -621,30 +677,31 @@ export default function TrackManPage() {
     const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
+    const targetEvent = events.find((item) => item.id === (eventIdOverride || selectedEventId));
     link.href = url;
-    link.download = scope === 'event' ? `event-${selectedEvent?.slug ?? 'data'}.csv` : 'all-events.csv';
+    link.download = scope === 'event' ? `event-${targetEvent?.slug ?? 'data'}.csv` : 'all-events.csv';
     link.click();
     URL.revokeObjectURL(url);
   };
 
-  const sidebarItems: { id: ConsoleView; label: string; show: boolean }[] = [
-    { id: 'operations', label: 'operations', show: true },
-    { id: 'admin-users', label: 'admin users', show: isAdmin },
-    { id: 'admin-events', label: 'admin events', show: canManageEvents },
-    { id: 'admin-reports', label: 'admin reports', show: isAdmin },
-    { id: 'manager-events', label: 'my events', show: isEventManager },
-    { id: 'manager-team', label: 'event team', show: isEventManager || isAdmin },
+  const sidebarItems: { id: ConsoleView; label: string; show: boolean; icon: ComponentType<IconProps> }[] = [
+    { id: 'operations', label: 'operations', show: true, icon: IconGrid },
+    { id: 'admin-users', label: 'admin users', show: isAdmin, icon: IconUsers },
+    { id: 'admin-events', label: 'admin events', show: canManageEvents, icon: IconCalendar },
+    { id: 'admin-reports', label: 'admin reports', show: isAdmin, icon: IconReport },
+    { id: 'manager-events', label: 'my events', show: isEventManager, icon: IconCalendar },
+    { id: 'manager-team', label: 'event team', show: isEventManager || isAdmin, icon: IconUsers },
   ];
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-8 font-[family-name:var(--font-manrope)] text-slate-900 md:px-8">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#fff3ea_0%,_#ffffff_45%,_#ffffff_100%)] px-4 py-8 font-[family-name:var(--font-roboto-mono)] text-black md:px-8">
       <div className="mx-auto max-w-6xl space-y-4">
-        <section className="rounded-2xl border border-slate-200 bg-white p-6">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">track man</p>
+        <section className="rounded-3xl border border-black/10 bg-white p-6 shadow-[0_8px_30px_rgba(0,0,0,0.05)]">
+          <p className="text-xs uppercase tracking-[0.2em] text-black/50">track man</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h1 className="font-[family-name:var(--font-space-grotesk)] text-4xl font-semibold">event operations</h1>
-              <p className="text-sm text-slate-500">clean and focused workflow</p>
+              <h1 className="font-[family-name:var(--font-space-grotesk)] text-4xl font-semibold tracking-tight">event operations</h1>
+              <p className="text-sm text-black/60">clean and focused workflow</p>
             </div>
             <Tabs selectedKey={tab} onSelectionChange={(key) => setTab(key as 'public' | 'console')} variant="bordered" radius="full">
               <Tab key="public" title="Public" />
@@ -676,6 +733,10 @@ export default function TrackManPage() {
             ) : !publicEvent ? (
               <Card className="border border-rose-200 bg-rose-50">
                 <CardBody className="text-sm text-rose-700">event link not valid</CardBody>
+              </Card>
+            ) : isPublicEventOffline ? (
+              <Card className="border border-amber-200 bg-amber-50">
+                <CardBody className="text-sm text-amber-700">this event is offline because the event date has passed.</CardBody>
               </Card>
             ) : (
               <>
@@ -720,10 +781,16 @@ export default function TrackManPage() {
                     {publicMetrics.nextFiveTraining.length === 0 ? (
                       <p className="text-sm text-slate-500">no one waiting for training</p>
                     ) : (
-                      publicMetrics.nextFiveTraining.map((item) => (
-                        <div key={item.id} className="rounded-lg border border-slate-200 px-3 py-2">
+                      publicMetrics.nextFiveTraining.map((item, index) => (
+                        <motion.div
+                          key={item.id}
+                          className="rounded-lg border border-slate-200 px-3 py-2"
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ duration: 0.18, delay: index * 0.03 }}
+                        >
                           <p className="font-medium">{item.name}</p>
-                        </div>
+                        </motion.div>
                       ))
                     )}
                   </CardBody>
@@ -748,8 +815,8 @@ export default function TrackManPage() {
                 </CardBody>
               </Card>
             ) : (
-              <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-                <Card className="border border-slate-200 bg-white">
+              <div className="grid gap-4 md:grid-cols-[180px_1fr]">
+                <Card className="border border-black/10 bg-white shadow-[0_8px_30px_rgba(0,0,0,0.04)]">
                   <CardHeader>
                     <div>
                       <p className="text-xs uppercase tracking-[0.2em] text-slate-500">console</p>
@@ -775,11 +842,11 @@ export default function TrackManPage() {
                       .map((item) => (
                         <Button
                           key={item.id}
-                          variant={view === item.id ? 'solid' : 'flat'}
-                          color={view === item.id ? 'primary' : 'default'}
+                          variant={view === item.id ? 'solid' : 'light'}
+                          className={view === item.id ? 'justify-start bg-[#ff5a00] text-white' : 'justify-start text-black/70'}
                           onPress={() => setView(item.id)}
-                          className="justify-start"
                         >
+                          <item.icon className={sidebarIconClass} />
                           {item.label}
                         </Button>
                       ))}
@@ -790,12 +857,20 @@ export default function TrackManPage() {
                   </CardBody>
                 </Card>
 
-                <div className="space-y-4">
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    key={view}
+                    className="space-y-4"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.18, ease: 'easeOut' }}
+                  >
                   {view === 'operations' ? (
                     <>
                       <Card className="border border-slate-200 bg-white">
                         <CardHeader>
-                          <h3 className="text-lg font-semibold">participant registration</h3>
+                          <h3 className="text-lg font-semibold">lifestyle profile intake</h3>
                         </CardHeader>
                         <CardBody className="grid gap-3 md:grid-cols-5">
                           <Select
@@ -809,10 +884,15 @@ export default function TrackManPage() {
                               }
                             }}
                           >
-                            {events.map((event) => (
+                            {activeEvents.map((event) => (
                               <SelectItem key={event.id}>{event.name}</SelectItem>
                             ))}
                           </Select>
+                          {selectedEvent ? (
+                            <p className="text-xs text-slate-500 md:col-span-5">
+                              custom public link: {origin}/?event={selectedEvent.slug}
+                            </p>
+                          ) : null}
                           <Input label="name" value={participantName} onValueChange={setParticipantName} />
                           <Input label="contact number" value={participantContact} onValueChange={setParticipantContact} />
                           <Input label="email id" type="email" value={participantEmail} onValueChange={setParticipantEmail} />
@@ -827,7 +907,7 @@ export default function TrackManPage() {
 
                       <Card className="border border-slate-200 bg-white">
                         <CardHeader className="flex items-center justify-between">
-                          <h3 className="text-lg font-semibold">participant flow</h3>
+                          <h3 className="text-lg font-semibold">telemetry pipeline</h3>
                           <Select
                             label="event"
                             className="max-w-xs"
@@ -839,7 +919,7 @@ export default function TrackManPage() {
                               }
                             }}
                           >
-                            {events.map((event) => (
+                            {activeEvents.map((event) => (
                               <SelectItem key={event.id}>{event.name}</SelectItem>
                             ))}
                           </Select>
@@ -948,7 +1028,7 @@ export default function TrackManPage() {
                             if (typeof first === 'string') setSelectedEventId(first);
                           }}
                         >
-                          {events.map((event) => (
+                          {activeEvents.map((event) => (
                             <SelectItem key={event.id}>{event.name}</SelectItem>
                           ))}
                         </Select>
@@ -992,18 +1072,18 @@ export default function TrackManPage() {
                       <CardBody className="space-y-3">
                         <Select
                           label="event"
-                          selectedKeys={selectedEventId ? [selectedEventId] : []}
+                          selectedKeys={reportEventId ? [reportEventId] : []}
                           onSelectionChange={(keys) => {
                             const first = Array.from(keys)[0];
-                            if (typeof first === 'string') setSelectedEventId(first);
+                            if (typeof first === 'string') setReportEventId(first);
                           }}
                         >
-                          {events.map((event) => (
+                          {archivedEvents.map((event) => (
                             <SelectItem key={event.id}>{event.name}</SelectItem>
                           ))}
                         </Select>
                         <div className="flex flex-wrap gap-2">
-                          <Button color="success" onPress={() => exportCsv('event')}>
+                          <Button color="success" onPress={() => exportCsv('event', reportEventId)}>
                             download event csv
                           </Button>
                           <Button variant="flat" onPress={() => exportCsv('total')}>
@@ -1027,7 +1107,7 @@ export default function TrackManPage() {
                             <div key={event.id} className="rounded-lg border border-slate-200 px-3 py-2">
                               <p className="font-medium">{event.name}</p>
                               <p className="text-xs text-slate-500">
-                                {event.location} | {event.date} | /?event={event.slug}
+                                {event.location} | {event.date} | {isEventActive(event.date) ? 'active' : 'offline'} | {origin}/?event={event.slug}
                               </p>
                             </div>
                           ))
@@ -1050,12 +1130,26 @@ export default function TrackManPage() {
                             if (typeof first === 'string') setTeamEventId(first);
                           }}
                         >
-                          {(isAdmin ? events : managerEvents).map((event) => (
+                          {(isAdmin ? activeEvents : managerActiveEvents).map((event) => (
                             <SelectItem key={event.id}>{event.name}</SelectItem>
                           ))}
                         </Select>
 
                         <div className="grid gap-3 md:grid-cols-4">
+                          <Select
+                            label="pick existing profile"
+                            selectedKeys={teamEmail ? [teamEmail] : []}
+                            onSelectionChange={(keys) => {
+                              const first = Array.from(keys)[0];
+                              if (typeof first === 'string') setTeamEmail(first);
+                            }}
+                          >
+                            {users
+                              .filter((user) => managerProfileRoles.includes(user.role))
+                              .map((user) => (
+                                <SelectItem key={user.email}>{user.email}</SelectItem>
+                              ))}
+                          </Select>
                           <Input label="email" value={teamEmail} onValueChange={setTeamEmail} />
                           <Input
                             label="password (required for new user)"
@@ -1114,7 +1208,8 @@ export default function TrackManPage() {
                       </CardBody>
                     </Card>
                   ) : null}
-                </div>
+                  </motion.div>
+                </AnimatePresence>
               </div>
             )}
           </section>

@@ -6,6 +6,7 @@ import {
   Space_Grotesk,
   Bricolage_Grotesque,
   Instrument_Serif,
+  Roboto_Mono,
 } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
@@ -41,6 +42,11 @@ const instrumentSerif = Instrument_Serif({
   subsets: ["latin"],
 });
 
+const robotoMono = Roboto_Mono({
+  variable: "--font-roboto-mono",
+  subsets: ["latin"],
+});
+
 export const metadata: Metadata = {
   title: "makesomething ☀️",
   description: "build your first app with ai. look what i made!",
@@ -65,7 +71,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="light" suppressHydrationWarning>
 	 <body
-        className={`${geistSans.variable} ${geistMono.variable} ${manrope.variable} ${spaceGrotesk.variable} ${bricolageGrotesque.variable} ${instrumentSerif.variable} min-h-screen text-foreground bg-background font-sans antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${manrope.variable} ${spaceGrotesk.variable} ${bricolageGrotesque.variable} ${instrumentSerif.variable} ${robotoMono.variable} min-h-screen text-foreground bg-background font-sans antialiased`}
       >
         <Providers>{children}</Providers>
       </body>
