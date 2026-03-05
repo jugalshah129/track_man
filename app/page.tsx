@@ -6,6 +6,7 @@ import {
   Card,
   CardBody,
   CardHeader,
+  Checkbox,
   Chip,
   Divider,
   Input,
@@ -76,6 +77,13 @@ type Participant = {
   createdAt: number;
   trainedAt?: number;
   gearAllocatedAt?: number;
+  gearItems?: {
+    helmet: boolean;
+    jacket: boolean;
+    gloves: boolean;
+    kneeGuard: boolean;
+    selfGear: boolean;
+  };
   trackEnteredAt?: number;
   trackExitedAt?: number;
   gearReturnedAt?: number;
@@ -170,6 +178,13 @@ function csvEscape(value: string | number): string {
   return text;
 }
 
+function formatDateTime(value?: number): string {
+  if (!value) return '';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toISOString().replace('T', ' ').slice(0, 19);
+}
+
 function isEventActive(eventDate: string): boolean {
   if (!eventDate) return false;
   const today = new Date();
@@ -194,6 +209,7 @@ export default function TrackManPage() {
   const [users, setUsers] = useState<RoleUser[]>([]);
   const [eventUsers, setEventUsers] = useState<EventUser[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [allParticipants, setAllParticipants] = useState<Participant[]>([]);
 
   const [selectedEventId, setSelectedEventId] = useState('');
   const [reportEventId, setReportEventId] = useState('');
@@ -218,9 +234,18 @@ export default function TrackManPage() {
   const [participantContact, setParticipantContact] = useState('');
   const [participantEmail, setParticipantEmail] = useState('');
   const [participantBikeOwned, setParticipantBikeOwned] = useState('');
+  const [gearTargetId, setGearTargetId] = useState('');
+  const [gearForm, setGearForm] = useState({
+    helmet: true,
+    jacket: true,
+    gloves: true,
+    kneeGuard: true,
+    selfGear: false,
+  });
 
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const isPublicOnlyMode = Boolean(publicSlug);
 
   useEffect(() => {
     setOrigin(window.location.origin);
@@ -265,11 +290,15 @@ export default function TrackManPage() {
       });
       setEvents(rows);
       const activeRows = rows.filter((item) => isEventActive(item.date));
-      const archivedRows = rows.filter((item) => !isEventActive(item.date));
+      const sortedRows = [...rows].sort((a, b) => {
+        const aTime = new Date(`${a.date}T00:00:00`).getTime();
+        const bTime = new Date(`${b.date}T00:00:00`).getTime();
+        return bTime - aTime;
+      });
       if (!selectedEventId && activeRows.length > 0) setSelectedEventId(activeRows[0].id);
       if (!teamEventId && activeRows.length > 0) setTeamEventId(activeRows[0].id);
       if (!participantEventId && activeRows.length > 0) setParticipantEventId(activeRows[0].id);
-      if (!reportEventId && archivedRows.length > 0) setReportEventId(archivedRows[0].id);
+      if (!reportEventId && sortedRows.length > 0) setReportEventId(sortedRows[0].id);
     });
 
     return () => unsub();
@@ -307,6 +336,14 @@ export default function TrackManPage() {
       setEventUsers(rows);
     });
 
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'participants'), (snap) => {
+      const rows: Participant[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Participant, 'id'>) }));
+      setAllParticipants(rows);
+    });
     return () => unsub();
   }, []);
 
@@ -361,7 +398,15 @@ export default function TrackManPage() {
 
   const selectedEvent = useMemo(() => events.find((item) => item.id === selectedEventId) ?? null, [events, selectedEventId]);
   const activeEvents = useMemo(() => events.filter((item) => isEventActive(item.date)), [events]);
-  const archivedEvents = useMemo(() => events.filter((item) => !isEventActive(item.date)), [events]);
+  const eventsByDateDesc = useMemo(
+    () =>
+      [...events].sort((a, b) => {
+        const aTime = new Date(`${a.date}T00:00:00`).getTime();
+        const bTime = new Date(`${b.date}T00:00:00`).getTime();
+        return bTime - aTime;
+      }),
+    [events]
+  );
   const managerEvents = useMemo(
     () => events.filter((item) => item.eventManagerEmail === currentEmail),
     [currentEmail, events]
@@ -402,6 +447,23 @@ export default function TrackManPage() {
 
     return { totalRegistered, totalTrained, trackCompleted, nextFiveTraining };
   }, [participants]);
+
+  const eventParticipantCount = useMemo(() => {
+    const counts = new Map<string, number>();
+    allParticipants.forEach((item) => {
+      counts.set(item.eventId, (counts.get(item.eventId) ?? 0) + 1);
+    });
+    return counts;
+  }, [allParticipants]);
+
+  const visibleParticipants = useMemo(() => {
+    if (isAdmin) return participants;
+    const gearOnly = hasRole('gear-manager') && !hasRole('track-manager') && !hasRole('trainer') && !hasRole('reception');
+    const trackOnly = hasRole('track-manager') && !hasRole('gear-manager') && !hasRole('trainer') && !hasRole('reception');
+    if (gearOnly) return participants.filter((item) => Boolean(item.trainedAt));
+    if (trackOnly) return participants.filter((item) => Boolean(item.gearAllocatedAt));
+    return participants;
+  }, [hasRole, isAdmin, participants]);
 
   const eventManagerOptions = users.filter((item) => item.role === 'event-manager');
 
@@ -604,9 +666,12 @@ export default function TrackManPage() {
     await updateDoc(doc(db, 'participants', id), { trainedAt: Date.now() });
   };
 
-  const allocateGear = async (id: string) => {
+  const allocateGear = async (
+    id: string,
+    gearItems: { helmet: boolean; jacket: boolean; gloves: boolean; kneeGuard: boolean; selfGear: boolean }
+  ) => {
     if (!canGear) return;
-    await updateDoc(doc(db, 'participants', id), { gearAllocatedAt: Date.now() });
+    await updateDoc(doc(db, 'participants', id), { gearAllocatedAt: Date.now(), gearItems });
   };
 
   const markTrackEntry = async (id: string) => {
@@ -662,12 +727,12 @@ export default function TrackManPage() {
           csvEscape(item.contactNumber),
           csvEscape(item.email),
           csvEscape(item.bikeOwned),
-          csvEscape(item.createdAt ?? ''),
-          csvEscape(item.trainedAt ?? ''),
-          csvEscape(item.gearAllocatedAt ?? ''),
-          csvEscape(item.trackEnteredAt ?? ''),
-          csvEscape(item.trackExitedAt ?? ''),
-          csvEscape(item.gearReturnedAt ?? ''),
+          csvEscape(formatDateTime(item.createdAt)),
+          csvEscape(formatDateTime(item.trainedAt)),
+          csvEscape(formatDateTime(item.gearAllocatedAt)),
+          csvEscape(formatDateTime(item.trackEnteredAt)),
+          csvEscape(formatDateTime(item.trackExitedAt)),
+          csvEscape(formatDateTime(item.gearReturnedAt)),
         ].join(',')
       );
 
@@ -701,10 +766,12 @@ export default function TrackManPage() {
               <h1 className="font-[family-name:var(--font-space-grotesk)] text-4xl font-semibold tracking-tight">event operations</h1>
               <p className="text-sm text-black/60">clean and focused workflow</p>
             </div>
-            <Tabs selectedKey={tab} onSelectionChange={(key) => setTab(key as 'public' | 'console')} variant="bordered" radius="full">
-              <Tab key="public" title="Public" />
-              <Tab key="console" title="Console" />
-            </Tabs>
+            {!isPublicOnlyMode ? (
+              <Tabs selectedKey={tab} onSelectionChange={(key) => setTab(key as 'public' | 'console')} variant="bordered" radius="full">
+                <Tab key="public" title="Public" />
+                <Tab key="console" title="Console" />
+              </Tabs>
+            ) : null}
           </div>
         </section>
 
@@ -720,7 +787,7 @@ export default function TrackManPage() {
           </Card>
         ) : null}
 
-        {tab === 'public' ? (
+        {isPublicOnlyMode || tab === 'public' ? (
           <section className="space-y-4">
             {!publicSlug ? (
               <Card className="border border-slate-200 bg-white">
@@ -888,7 +955,15 @@ export default function TrackManPage() {
                           </Select>
                           {selectedEvent ? (
                             <p className="text-xs text-slate-500 md:col-span-5">
-                              custom public link: {origin}/?event={selectedEvent.slug}
+                              custom public link:{' '}
+                              <a
+                                href={`${origin}/?event=${selectedEvent.slug}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[#ff5a00] underline"
+                              >
+                                {origin}/?event={selectedEvent.slug}
+                              </a>
                             </p>
                           ) : null}
                           <Input label="name" value={participantName} onValueChange={setParticipantName} />
@@ -924,10 +999,10 @@ export default function TrackManPage() {
                         </CardHeader>
                         <Divider />
                         <CardBody className="space-y-2">
-                          {participants.length === 0 ? (
+                          {visibleParticipants.length === 0 ? (
                             <p className="text-sm text-slate-500">no participants in selected event</p>
                           ) : (
-                            participants.map((item) => (
+                            visibleParticipants.map((item) => (
                               <div key={item.id} className="space-y-2 rounded-lg border border-slate-200 p-3 md:flex md:items-center md:justify-between md:space-y-0">
                                 <div>
                                   <p className="font-medium">{item.name}</p>
@@ -943,9 +1018,92 @@ export default function TrackManPage() {
                                     </Button>
                                   ) : null}
                                   {item.trainedAt && !item.gearAllocatedAt ? (
-                                    <Button size="sm" variant="flat" onPress={() => allocateGear(item.id)} isDisabled={!canGear}>
-                                      allocate gear
-                                    </Button>
+                                    <>
+                                      <Button
+                                        size="sm"
+                                        variant="flat"
+                                        onPress={() => {
+                                          setGearTargetId(item.id);
+                                          setGearForm({
+                                            helmet: true,
+                                            jacket: true,
+                                            gloves: true,
+                                            kneeGuard: true,
+                                            selfGear: false,
+                                          });
+                                        }}
+                                        isDisabled={!canGear}
+                                      >
+                                        choose gear
+                                      </Button>
+                                      {gearTargetId === item.id ? (
+                                        <div className="w-full rounded-lg border border-slate-200 bg-white p-3">
+                                          <p className="mb-2 text-xs text-slate-600">select provided gears or mark self gear</p>
+                                          <div className="grid gap-2 md:grid-cols-3">
+                                            <Checkbox
+                                              isSelected={gearForm.helmet}
+                                              onValueChange={(value) => setGearForm((prev) => ({ ...prev, helmet: value, selfGear: value ? false : prev.selfGear }))}
+                                            >
+                                              helmet
+                                            </Checkbox>
+                                            <Checkbox
+                                              isSelected={gearForm.jacket}
+                                              onValueChange={(value) => setGearForm((prev) => ({ ...prev, jacket: value, selfGear: value ? false : prev.selfGear }))}
+                                            >
+                                              jacket
+                                            </Checkbox>
+                                            <Checkbox
+                                              isSelected={gearForm.gloves}
+                                              onValueChange={(value) => setGearForm((prev) => ({ ...prev, gloves: value, selfGear: value ? false : prev.selfGear }))}
+                                            >
+                                              gloves
+                                            </Checkbox>
+                                            <Checkbox
+                                              isSelected={gearForm.kneeGuard}
+                                              onValueChange={(value) => setGearForm((prev) => ({ ...prev, kneeGuard: value, selfGear: value ? false : prev.selfGear }))}
+                                            >
+                                              knee guard
+                                            </Checkbox>
+                                            <Checkbox
+                                              isSelected={gearForm.selfGear}
+                                              onValueChange={(value) =>
+                                                setGearForm((prev) => ({
+                                                  ...prev,
+                                                  selfGear: value,
+                                                  helmet: value ? false : prev.helmet,
+                                                  jacket: value ? false : prev.jacket,
+                                                  gloves: value ? false : prev.gloves,
+                                                  kneeGuard: value ? false : prev.kneeGuard,
+                                                }))
+                                              }
+                                            >
+                                              self gear
+                                            </Checkbox>
+                                          </div>
+                                          <div className="mt-3 flex gap-2">
+                                            <Button
+                                              size="sm"
+                                              color="primary"
+                                              onPress={async () => {
+                                                const hasProvidedGear = gearForm.helmet || gearForm.jacket || gearForm.gloves || gearForm.kneeGuard;
+                                                if (!gearForm.selfGear && !hasProvidedGear) {
+                                                  setError('select at least one gear item or choose self gear');
+                                                  return;
+                                                }
+                                                await allocateGear(item.id, gearForm);
+                                                setGearTargetId('');
+                                                setNotice('gear allocated');
+                                              }}
+                                            >
+                                              confirm allocation
+                                            </Button>
+                                            <Button size="sm" variant="light" onPress={() => setGearTargetId('')}>
+                                              cancel
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      ) : null}
+                                    </>
                                   ) : null}
                                   {item.gearAllocatedAt && !item.trackEnteredAt ? (
                                     <Button size="sm" variant="flat" onPress={() => markTrackEntry(item.id)} isDisabled={!canTrack}>
@@ -1026,7 +1184,7 @@ export default function TrackManPage() {
                             if (typeof first === 'string') setSelectedEventId(first);
                           }}
                         >
-                          {activeEvents.map((event) => (
+                          {eventsByDateDesc.map((event) => (
                             <SelectItem key={event.id}>{event.name}</SelectItem>
                           ))}
                         </Select>
@@ -1058,6 +1216,24 @@ export default function TrackManPage() {
                             Update Selected
                           </Button>
                         </div>
+                        <Divider className="my-1" />
+                        <div className="space-y-2">
+                          {eventsByDateDesc.map((event) => (
+                            <div key={event.id} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2">
+                              <div>
+                                <p className="font-medium">
+                                  {event.name} <span className="text-xs text-slate-500">({event.date})</span>
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                  {event.location} | total participants: {eventParticipantCount.get(event.id) ?? 0}
+                                </p>
+                              </div>
+                              <Button size="sm" color="success" variant="flat" onPress={() => exportCsv('event', event.id)}>
+                                download csv
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
                       </CardBody>
                     </Card>
                   ) : null}
@@ -1076,7 +1252,7 @@ export default function TrackManPage() {
                             if (typeof first === 'string') setReportEventId(first);
                           }}
                         >
-                          {archivedEvents.map((event) => (
+                          {eventsByDateDesc.map((event) => (
                             <SelectItem key={event.id}>{event.name}</SelectItem>
                           ))}
                         </Select>
@@ -1105,7 +1281,15 @@ export default function TrackManPage() {
                             <div key={event.id} className="rounded-lg border border-slate-200 px-3 py-2">
                               <p className="font-medium">{event.name}</p>
                               <p className="text-xs text-slate-500">
-                                {event.location} | {event.date} | {isEventActive(event.date) ? 'active' : 'offline'} | {origin}/?event={event.slug}
+                                {event.location} | {event.date} | {isEventActive(event.date) ? 'active' : 'offline'} |{' '}
+                                <a
+                                  href={`${origin}/?event=${event.slug}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-[#ff5a00] underline"
+                                >
+                                  open dashboard
+                                </a>
                               </p>
                             </div>
                           ))
