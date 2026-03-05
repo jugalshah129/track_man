@@ -414,8 +414,6 @@ export default function TrackManPage() {
     } catch {
       setAuthError('login failed. check email and password');
     }
-
-    return true;
   };
 
   const createAuthUser = async (email: string, password: string, role: AppRole): Promise<boolean> => {
