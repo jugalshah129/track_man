@@ -6,6 +6,7 @@ import {
   Card,
   CardBody,
   CardHeader,
+  Checkbox,
   Chip,
   Divider,
   Input,
@@ -76,6 +77,13 @@ type Participant = {
   createdAt: number;
   trainedAt?: number;
   gearAllocatedAt?: number;
+  gearItems?: {
+    helmet: boolean;
+    jacket: boolean;
+    gloves: boolean;
+    kneeGuard: boolean;
+    selfGear: boolean;
+  };
   trackEnteredAt?: number;
   trackExitedAt?: number;
   gearReturnedAt?: number;
@@ -170,6 +178,13 @@ function csvEscape(value: string | number): string {
   return text;
 }
 
+function formatDateTime(value?: number): string {
+  if (!value) return '';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toISOString().replace('T', ' ').slice(0, 19);
+}
+
 function isEventActive(eventDate: string): boolean {
   if (!eventDate) return false;
   const today = new Date();
@@ -194,6 +209,7 @@ export default function TrackManPage() {
   const [users, setUsers] = useState<RoleUser[]>([]);
   const [eventUsers, setEventUsers] = useState<EventUser[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [allParticipants, setAllParticipants] = useState<Participant[]>([]);
 
   const [selectedEventId, setSelectedEventId] = useState('');
   const [reportEventId, setReportEventId] = useState('');
@@ -218,9 +234,18 @@ export default function TrackManPage() {
   const [participantContact, setParticipantContact] = useState('');
   const [participantEmail, setParticipantEmail] = useState('');
   const [participantBikeOwned, setParticipantBikeOwned] = useState('');
+  const [gearTargetId, setGearTargetId] = useState('');
+  const [gearForm, setGearForm] = useState({
+    helmet: true,
+    jacket: true,
+    gloves: true,
+    kneeGuard: true,
+    selfGear: false,
+  });
 
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const isPublicOnlyMode = Boolean(publicSlug);
 
   useEffect(() => {
     setOrigin(window.location.origin);
@@ -265,11 +290,15 @@ export default function TrackManPage() {
       });
       setEvents(rows);
       const activeRows = rows.filter((item) => isEventActive(item.date));
-      const archivedRows = rows.filter((item) => !isEventActive(item.date));
+      const sortedRows = [...rows].sort((a, b) => {
+        const aTime = new Date(`${a.date}T00:00:00`).getTime();
+        const bTime = new Date(`${b.date}T00:00:00`).getTime();
+        return bTime - aTime;
+      });
       if (!selectedEventId && activeRows.length > 0) setSelectedEventId(activeRows[0].id);
       if (!teamEventId && activeRows.length > 0) setTeamEventId(activeRows[0].id);
       if (!participantEventId && activeRows.length > 0) setParticipantEventId(activeRows[0].id);
-      if (!reportEventId && archivedRows.length > 0) setReportEventId(archivedRows[0].id);
+      if (!reportEventId && sortedRows.length > 0) setReportEventId(sortedRows[0].id);
     });
 
     return () => unsub();
@@ -307,6 +336,14 @@ export default function TrackManPage() {
       setEventUsers(rows);
     });
 
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'participants'), (snap) => {
+      const rows: Participant[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Participant, 'id'>) }));
+      setAllParticipants(rows);
+    });
     return () => unsub();
   }, []);
 
@@ -361,12 +398,33 @@ export default function TrackManPage() {
 
   const selectedEvent = useMemo(() => events.find((item) => item.id === selectedEventId) ?? null, [events, selectedEventId]);
   const activeEvents = useMemo(() => events.filter((item) => isEventActive(item.date)), [events]);
-  const archivedEvents = useMemo(() => events.filter((item) => !isEventActive(item.date)), [events]);
-  const managerEvents = useMemo(
-    () => events.filter((item) => item.eventManagerEmail === currentEmail),
-    [currentEmail, events]
+  const eventsByDateDesc = useMemo(
+    () =>
+      [...events].sort((a, b) => {
+        const aTime = new Date(`${a.date}T00:00:00`).getTime();
+        const bTime = new Date(`${b.date}T00:00:00`).getTime();
+        return bTime - aTime;
+      }),
+    [events]
   );
+  const managerEvents = useMemo(() => events.filter((item) => item.eventManagerEmail === currentEmail), [currentEmail, events]);
   const managerActiveEvents = useMemo(() => managerEvents.filter((item) => isEventActive(item.date)), [managerEvents]);
+  const userEventAssignments = useMemo(
+    () =>
+      eventUsers
+        .filter((item) => item.email === currentEmail)
+        .sort((a, b) => Number(b.createdAt ?? 0) - Number(a.createdAt ?? 0)),
+    [currentEmail, eventUsers]
+  );
+  const singleAssignedEventId = userEventAssignments[0]?.eventId ?? '';
+  const restrictedOperationalAccess = !isAdmin && !isRcm && !isEventManager;
+  const operationalEventOptions = useMemo(() => {
+    if (restrictedOperationalAccess) {
+      const event = activeEvents.find((item) => item.id === singleAssignedEventId);
+      return event ? [event] : [];
+    }
+    return activeEvents;
+  }, [activeEvents, restrictedOperationalAccess, singleAssignedEventId]);
 
   const canManageTeamForEvent = (eventId: string): boolean => {
     if (isAdmin) return true;
@@ -382,6 +440,12 @@ export default function TrackManPage() {
       setTeamEventId(managerActiveEvents[0].id);
     }
   }, [isEventManager, managerActiveEvents, teamEventId]);
+
+  useEffect(() => {
+    if (!restrictedOperationalAccess || !singleAssignedEventId) return;
+    setSelectedEventId(singleAssignedEventId);
+    setParticipantEventId(singleAssignedEventId);
+  }, [restrictedOperationalAccess, singleAssignedEventId]);
 
   const teamMembers = useMemo(() => {
     if (!teamEventId) return [] as EventUser[];
@@ -402,6 +466,56 @@ export default function TrackManPage() {
 
     return { totalRegistered, totalTrained, trackCompleted, nextFiveTraining };
   }, [participants]);
+  const registrationBins = useMemo(() => {
+    const counts = new Map<number, number>();
+    participants.forEach((item) => {
+      const time = Number(item.createdAt ?? 0);
+      if (!time) return;
+      const bucket = Math.floor(time / (15 * 60 * 1000)) * (15 * 60 * 1000);
+      counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+    });
+    const sorted = Array.from(counts.entries()).sort((a, b) => a[0] - b[0]).slice(-12);
+    const max = Math.max(...sorted.map(([, count]) => count), 1);
+    return sorted.map(([bucket, count]) => ({
+      label: new Date(bucket).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      count,
+      height: `${Math.max(10, Math.round((count / max) * 100))}%`,
+    }));
+  }, [participants]);
+
+  const eventParticipantCount = useMemo(() => {
+    const counts = new Map<string, number>();
+    allParticipants.forEach((item) => {
+      counts.set(item.eventId, (counts.get(item.eventId) ?? 0) + 1);
+    });
+    return counts;
+  }, [allParticipants]);
+
+  const visibleParticipants = useMemo(() => {
+    if (isAdmin) return participants;
+    const gearOnly = hasRole('gear-manager') && !hasRole('track-manager') && !hasRole('trainer') && !hasRole('reception');
+    const trackOnly = hasRole('track-manager') && !hasRole('gear-manager') && !hasRole('trainer') && !hasRole('reception');
+    if (gearOnly) return participants.filter((item) => Boolean(item.trainedAt));
+    if (trackOnly) return participants.filter((item) => Boolean(item.gearAllocatedAt));
+    return participants;
+  }, [hasRole, isAdmin, participants]);
+  const trainerQueue = useMemo(() => participants.filter((item) => !item.trainedAt), [participants]);
+  const gearPendingCollection = useMemo(
+    () => participants.filter((item) => item.trainedAt && !item.gearAllocatedAt),
+    [participants]
+  );
+  const gearAllocatedPendingReturn = useMemo(
+    () => participants.filter((item) => item.gearAllocatedAt && !item.gearReturnedAt),
+    [participants]
+  );
+  const trackPendingEntry = useMemo(
+    () => participants.filter((item) => item.gearAllocatedAt && !item.trackEnteredAt),
+    [participants]
+  );
+  const trackOnTrackPendingExit = useMemo(
+    () => participants.filter((item) => item.trackEnteredAt && !item.trackExitedAt),
+    [participants]
+  );
 
   const eventManagerOptions = users.filter((item) => item.role === 'event-manager');
 
@@ -414,8 +528,6 @@ export default function TrackManPage() {
     } catch {
       setAuthError('login failed. check email and password');
     }
-
-    return true;
   };
 
   const createAuthUser = async (email: string, password: string, role: AppRole): Promise<boolean> => {
@@ -554,6 +666,9 @@ export default function TrackManPage() {
       { merge: true }
     );
 
+    const existingAssignments = await getDocs(query(collection(db, 'eventUsers'), where('email', '==', lowerEmail)));
+    await Promise.all(existingAssignments.docs.map((assignmentDoc) => deleteDoc(doc(db, 'eventUsers', assignmentDoc.id))));
+
     await setDoc(doc(db, 'eventUsers', `${teamEventId}__${emailKey(lowerEmail)}`), {
       eventId: teamEventId,
       email: lowerEmail,
@@ -606,9 +721,12 @@ export default function TrackManPage() {
     await updateDoc(doc(db, 'participants', id), { trainedAt: Date.now() });
   };
 
-  const allocateGear = async (id: string) => {
+  const allocateGear = async (
+    id: string,
+    gearItems: { helmet: boolean; jacket: boolean; gloves: boolean; kneeGuard: boolean; selfGear: boolean }
+  ) => {
     if (!canGear) return;
-    await updateDoc(doc(db, 'participants', id), { gearAllocatedAt: Date.now() });
+    await updateDoc(doc(db, 'participants', id), { gearAllocatedAt: Date.now(), gearItems });
   };
 
   const markTrackEntry = async (id: string) => {
@@ -664,12 +782,12 @@ export default function TrackManPage() {
           csvEscape(item.contactNumber),
           csvEscape(item.email),
           csvEscape(item.bikeOwned),
-          csvEscape(item.createdAt ?? ''),
-          csvEscape(item.trainedAt ?? ''),
-          csvEscape(item.gearAllocatedAt ?? ''),
-          csvEscape(item.trackEnteredAt ?? ''),
-          csvEscape(item.trackExitedAt ?? ''),
-          csvEscape(item.gearReturnedAt ?? ''),
+          csvEscape(formatDateTime(item.createdAt)),
+          csvEscape(formatDateTime(item.trainedAt)),
+          csvEscape(formatDateTime(item.gearAllocatedAt)),
+          csvEscape(formatDateTime(item.trackEnteredAt)),
+          csvEscape(formatDateTime(item.trackExitedAt)),
+          csvEscape(formatDateTime(item.gearReturnedAt)),
         ].join(',')
       );
 
@@ -690,23 +808,25 @@ export default function TrackManPage() {
     { id: 'admin-events', label: 'admin events', show: canManageEvents, icon: IconCalendar },
     { id: 'admin-reports', label: 'admin reports', show: isAdmin, icon: IconReport },
     { id: 'manager-events', label: 'my events', show: isEventManager, icon: IconCalendar },
-    { id: 'manager-team', label: 'event team', show: isEventManager || isAdmin, icon: IconUsers },
+    { id: 'manager-team', label: 'add profiles', show: isEventManager || isAdmin, icon: IconUsers },
   ];
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#fff3ea_0%,_#ffffff_45%,_#ffffff_100%)] px-4 py-8 font-[family-name:var(--font-roboto-mono)] text-black md:px-8">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#fff3ea_0%,_#ffffff_45%,_#ffffff_100%)] px-4 py-8 font-[family-name:var(--font-roboto-mono)] text-black capitalize md:px-8">
       <div className="mx-auto max-w-6xl space-y-4">
         <section className="rounded-3xl border border-black/10 bg-white p-6 shadow-[0_8px_30px_rgba(0,0,0,0.05)]">
-          <p className="text-xs uppercase tracking-[0.2em] text-black/50">track man</p>
+          <p className="text-xs uppercase tracking-[0.2em] text-black/50">Track-Man</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="font-[family-name:var(--font-space-grotesk)] text-4xl font-semibold tracking-tight">event operations</h1>
               <p className="text-sm text-black/60">clean and focused workflow</p>
             </div>
-            <Tabs selectedKey={tab} onSelectionChange={(key) => setTab(key as 'public' | 'console')} variant="bordered" radius="full">
-              <Tab key="public" title="Public" />
-              <Tab key="console" title="Console" />
-            </Tabs>
+            {!isPublicOnlyMode ? (
+              <Tabs selectedKey={tab} onSelectionChange={(key) => setTab(key as 'public' | 'console')} variant="bordered" radius="full">
+                <Tab key="public" title="Public" />
+                <Tab key="console" title="Console" />
+              </Tabs>
+            ) : null}
           </div>
         </section>
 
@@ -722,7 +842,7 @@ export default function TrackManPage() {
           </Card>
         ) : null}
 
-        {tab === 'public' ? (
+        {isPublicOnlyMode || tab === 'public' ? (
           <section className="space-y-4">
             {!publicSlug ? (
               <Card className="border border-slate-200 bg-white">
@@ -771,6 +891,33 @@ export default function TrackManPage() {
                     </CardBody>
                   </Card>
                 </div>
+
+                <Card className="border border-slate-200 bg-white">
+                  <CardHeader>
+                    <h3 className="text-lg font-semibold">registrations every 15 minutes</h3>
+                  </CardHeader>
+                  <Divider />
+                  <CardBody>
+                    {registrationBins.length === 0 ? (
+                      <p className="text-sm text-slate-500">no registration data yet</p>
+                    ) : (
+                      <div className="grid grid-cols-6 gap-2 md:grid-cols-12">
+                        {registrationBins.map((bin) => (
+                          <div key={bin.label} className="flex flex-col items-center gap-2">
+                            <div className="flex h-28 w-full items-end rounded-sm bg-slate-100 px-1">
+                              <div
+                                className="w-full rounded-sm bg-[#ff5a00] transition-all"
+                                style={{ height: bin.height }}
+                                title={`${bin.count} registrations`}
+                              />
+                            </div>
+                            <p className="text-[10px] text-slate-500">{bin.label}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardBody>
+                </Card>
 
                 <Card className="border border-slate-200 bg-white">
                   <CardHeader>
@@ -876,6 +1023,7 @@ export default function TrackManPage() {
                           <Select
                             label="event"
                             selectedKeys={participantEventId ? [participantEventId] : []}
+                            isDisabled={restrictedOperationalAccess}
                             onSelectionChange={(keys) => {
                               const first = Array.from(keys)[0];
                               if (typeof first === 'string') {
@@ -884,13 +1032,21 @@ export default function TrackManPage() {
                               }
                             }}
                           >
-                            {activeEvents.map((event) => (
+                            {operationalEventOptions.map((event) => (
                               <SelectItem key={event.id}>{event.name}</SelectItem>
                             ))}
                           </Select>
                           {selectedEvent ? (
                             <p className="text-xs text-slate-500 md:col-span-5">
-                              custom public link: {origin}/?event={selectedEvent.slug}
+                              custom public link:{' '}
+                              <a
+                                href={`${origin}/?event=${selectedEvent.slug}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[#ff5a00] underline"
+                              >
+                                {origin}/?event={selectedEvent.slug}
+                              </a>
                             </p>
                           ) : null}
                           <Input label="name" value={participantName} onValueChange={setParticipantName} />
@@ -912,6 +1068,7 @@ export default function TrackManPage() {
                             label="event"
                             className="max-w-xs"
                             selectedKeys={selectedEventId ? [selectedEventId] : []}
+                            isDisabled={restrictedOperationalAccess}
                             onSelectionChange={(keys) => {
                               const first = Array.from(keys)[0];
                               if (typeof first === 'string') {
@@ -919,18 +1076,140 @@ export default function TrackManPage() {
                               }
                             }}
                           >
-                            {activeEvents.map((event) => (
+                            {operationalEventOptions.map((event) => (
                               <SelectItem key={event.id}>{event.name}</SelectItem>
                             ))}
                           </Select>
                         </CardHeader>
                         <Divider />
                         <CardBody className="space-y-2">
-                          {participants.length === 0 ? (
+                          {!isAdmin && canTrainer && !canGear && !canTrack ? (
+                            <>
+                              <p className="text-sm font-medium text-slate-700">registered and pending training</p>
+                              {trainerQueue.length === 0 ? (
+                                <p className="text-sm text-slate-500">no pending training participants</p>
+                              ) : (
+                                trainerQueue.map((item) => (
+                                  <div key={item.id} className="flex items-center justify-between rounded-md border border-slate-200 p-3">
+                                    <div>
+                                      <p className="font-medium">{item.name}</p>
+                                      <p className="text-xs text-slate-500">{item.contactNumber}</p>
+                                    </div>
+                                    <Button size="sm" variant="flat" onPress={() => markTrained(item.id)}>
+                                      mark trained
+                                    </Button>
+                                  </div>
+                                ))
+                              )}
+                            </>
+                          ) : !isAdmin && canGear && !canTrack ? (
+                            <>
+                              <p className="text-sm font-medium text-slate-700">trained and pending for gear collection</p>
+                              {gearPendingCollection.length === 0 ? (
+                                <p className="text-sm text-slate-500">no pending gear collection</p>
+                              ) : (
+                                gearPendingCollection.map((item) => (
+                                  <div key={item.id} className="space-y-2 rounded-md border border-slate-200 p-3">
+                                    <div className="flex items-center justify-between">
+                                      <p className="font-medium">{item.name}</p>
+                                      <Button
+                                        size="sm"
+                                        variant="flat"
+                                        onPress={() => {
+                                          setGearTargetId(item.id);
+                                          setGearForm({ helmet: true, jacket: true, gloves: true, kneeGuard: true, selfGear: false });
+                                        }}
+                                      >
+                                        choose gear
+                                      </Button>
+                                    </div>
+                                    {gearTargetId === item.id ? (
+                                      <div className="space-y-2 rounded-md border border-slate-200 bg-white p-3">
+                                        <div className="grid gap-2 md:grid-cols-3">
+                                          <Checkbox isSelected={gearForm.helmet} onValueChange={(value) => setGearForm((p) => ({ ...p, helmet: value, selfGear: value ? false : p.selfGear }))}>helmet</Checkbox>
+                                          <Checkbox isSelected={gearForm.jacket} onValueChange={(value) => setGearForm((p) => ({ ...p, jacket: value, selfGear: value ? false : p.selfGear }))}>jacket</Checkbox>
+                                          <Checkbox isSelected={gearForm.gloves} onValueChange={(value) => setGearForm((p) => ({ ...p, gloves: value, selfGear: value ? false : p.selfGear }))}>gloves</Checkbox>
+                                          <Checkbox isSelected={gearForm.kneeGuard} onValueChange={(value) => setGearForm((p) => ({ ...p, kneeGuard: value, selfGear: value ? false : p.selfGear }))}>knee guard</Checkbox>
+                                          <Checkbox isSelected={gearForm.selfGear} onValueChange={(value) => setGearForm((p) => ({ ...p, selfGear: value, helmet: value ? false : p.helmet, jacket: value ? false : p.jacket, gloves: value ? false : p.gloves, kneeGuard: value ? false : p.kneeGuard }))}>self gear</Checkbox>
+                                        </div>
+                                        <div className="flex gap-2">
+                                          <Button
+                                            size="sm"
+                                            color="primary"
+                                            onPress={async () => {
+                                              const hasProvidedGear = gearForm.helmet || gearForm.jacket || gearForm.gloves || gearForm.kneeGuard;
+                                              if (!gearForm.selfGear && !hasProvidedGear) {
+                                                setError('select at least one gear item or choose self gear');
+                                                return;
+                                              }
+                                              await allocateGear(item.id, gearForm);
+                                              setGearTargetId('');
+                                              setNotice('gear allocated');
+                                            }}
+                                          >
+                                            confirm allocation
+                                          </Button>
+                                          <Button size="sm" variant="light" onPress={() => setGearTargetId('')}>
+                                            cancel
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ))
+                              )}
+                              <Divider className="my-2" />
+                              <p className="text-sm font-medium text-slate-700">allocated gear and not returned</p>
+                              {gearAllocatedPendingReturn.length === 0 ? (
+                                <p className="text-sm text-slate-500">no pending gear returns</p>
+                              ) : (
+                                gearAllocatedPendingReturn.map((item) => (
+                                  <div key={item.id} className="flex items-center justify-between rounded-md border border-slate-200 p-3">
+                                    <p className="font-medium">{item.name}</p>
+                                    {!item.gearReturnedAt ? (
+                                      <Button size="sm" variant="flat" onPress={() => markGearReturn(item.id)}>
+                                        mark gear returned
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                ))
+                              )}
+                            </>
+                          ) : !isAdmin && canTrack && !canGear ? (
+                            <>
+                              <p className="text-sm font-medium text-slate-700">allocated gears - pending track entry</p>
+                              {trackPendingEntry.length === 0 ? (
+                                <p className="text-sm text-slate-500">no pending track entries</p>
+                              ) : (
+                                trackPendingEntry.map((item) => (
+                                  <div key={item.id} className="flex items-center justify-between rounded-md border border-slate-200 p-3">
+                                    <p className="font-medium">{item.name}</p>
+                                    <Button size="sm" variant="flat" onPress={() => markTrackEntry(item.id)}>
+                                      mark track entry
+                                    </Button>
+                                  </div>
+                                ))
+                              )}
+                              <Divider className="my-2" />
+                              <p className="text-sm font-medium text-slate-700">on track - pending return from track</p>
+                              {trackOnTrackPendingExit.length === 0 ? (
+                                <p className="text-sm text-slate-500">no participants currently on track</p>
+                              ) : (
+                                trackOnTrackPendingExit.map((item) => (
+                                  <div key={item.id} className="flex items-center justify-between rounded-md border border-slate-200 p-3">
+                                    <p className="font-medium">{item.name}</p>
+                                    <Button size="sm" variant="flat" onPress={() => markTrackExit(item.id)}>
+                                      mark track return
+                                    </Button>
+                                  </div>
+                                ))
+                              )}
+                            </>
+                          ) : visibleParticipants.length === 0 ? (
                             <p className="text-sm text-slate-500">no participants in selected event</p>
                           ) : (
-                            participants.map((item) => (
-                              <div key={item.id} className="space-y-2 rounded-lg border border-slate-200 p-3 md:flex md:items-center md:justify-between md:space-y-0">
+                            visibleParticipants.map((item) => (
+                              <div key={item.id} className="space-y-2 rounded-md border border-slate-200 p-3 md:flex md:items-center md:justify-between md:space-y-0">
                                 <div>
                                   <p className="font-medium">{item.name}</p>
                                   <p className="text-xs text-slate-500">
@@ -945,8 +1224,8 @@ export default function TrackManPage() {
                                     </Button>
                                   ) : null}
                                   {item.trainedAt && !item.gearAllocatedAt ? (
-                                    <Button size="sm" variant="flat" onPress={() => allocateGear(item.id)} isDisabled={!canGear}>
-                                      allocate gear
+                                    <Button size="sm" variant="flat" onPress={() => setGearTargetId(item.id)} isDisabled={!canGear}>
+                                      choose gear
                                     </Button>
                                   ) : null}
                                   {item.gearAllocatedAt && !item.trackEnteredAt ? (
@@ -957,11 +1236,6 @@ export default function TrackManPage() {
                                   {item.trackEnteredAt && !item.trackExitedAt ? (
                                     <Button size="sm" variant="flat" onPress={() => markTrackExit(item.id)} isDisabled={!canTrack}>
                                       track exit
-                                    </Button>
-                                  ) : null}
-                                  {item.trackExitedAt && !item.gearReturnedAt ? (
-                                    <Button size="sm" variant="flat" onPress={() => markGearReturn(item.id)} isDisabled={!canGear}>
-                                      return gear
                                     </Button>
                                   ) : null}
                                 </div>
@@ -1028,7 +1302,7 @@ export default function TrackManPage() {
                             if (typeof first === 'string') setSelectedEventId(first);
                           }}
                         >
-                          {activeEvents.map((event) => (
+                          {eventsByDateDesc.map((event) => (
                             <SelectItem key={event.id}>{event.name}</SelectItem>
                           ))}
                         </Select>
@@ -1060,6 +1334,24 @@ export default function TrackManPage() {
                             Update Selected
                           </Button>
                         </div>
+                        <Divider className="my-1" />
+                        <div className="space-y-2">
+                          {eventsByDateDesc.map((event) => (
+                            <div key={event.id} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2">
+                              <div>
+                                <p className="font-medium">
+                                  {event.name} <span className="text-xs text-slate-500">({event.date})</span>
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                  {event.location} | total participants: {eventParticipantCount.get(event.id) ?? 0}
+                                </p>
+                              </div>
+                              <Button size="sm" color="success" variant="flat" onPress={() => exportCsv('event', event.id)}>
+                                download csv
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
                       </CardBody>
                     </Card>
                   ) : null}
@@ -1078,7 +1370,7 @@ export default function TrackManPage() {
                             if (typeof first === 'string') setReportEventId(first);
                           }}
                         >
-                          {archivedEvents.map((event) => (
+                          {eventsByDateDesc.map((event) => (
                             <SelectItem key={event.id}>{event.name}</SelectItem>
                           ))}
                         </Select>
@@ -1107,7 +1399,15 @@ export default function TrackManPage() {
                             <div key={event.id} className="rounded-lg border border-slate-200 px-3 py-2">
                               <p className="font-medium">{event.name}</p>
                               <p className="text-xs text-slate-500">
-                                {event.location} | {event.date} | {isEventActive(event.date) ? 'active' : 'offline'} | {origin}/?event={event.slug}
+                                {event.location} | {event.date} | {isEventActive(event.date) ? 'active' : 'offline'} |{' '}
+                                <a
+                                  href={`${origin}/?event=${event.slug}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-[#ff5a00] underline"
+                                >
+                                  open dashboard
+                                </a>
                               </p>
                             </div>
                           ))
@@ -1119,9 +1419,12 @@ export default function TrackManPage() {
                   {view === 'manager-team' ? (
                     <Card className="border border-slate-200 bg-white">
                       <CardHeader>
-                        <h3 className="text-lg font-semibold">event team profiles</h3>
+                        <h3 className="text-lg font-semibold">add team profiles</h3>
                       </CardHeader>
                       <CardBody className="space-y-3">
+                        <p className="text-sm text-slate-600">
+                          event manager can add reception, trainer, gear manager, and track manager profiles for this event.
+                        </p>
                         <Select
                           label="event"
                           selectedKeys={teamEventId ? [teamEventId] : []}
@@ -1170,7 +1473,7 @@ export default function TrackManPage() {
                             ))}
                           </Select>
                           <Button className="md:mt-6" color="primary" onPress={upsertTeamProfile}>
-                            Create / Update Profile
+                            Add / Update Profile
                           </Button>
                         </div>
 
