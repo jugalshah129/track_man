@@ -35,8 +35,21 @@ export async function POST(request: Request) {
 
     const callerDoc = await adminDb.collection('users').doc(emailKey(callerEmail)).get();
     const callerRole = (callerDoc.data()?.role ?? null) as AppRole | null;
+    const hasGlobalEventManagerRole = callerRole === 'event-manager';
 
-    if (callerRole !== 'admin' && callerRole !== 'event-manager') {
+    let hasEventManagerAssignment = false;
+    if (!hasGlobalEventManagerRole && callerRole !== 'admin') {
+      const assignmentSnap = await adminDb
+        .collection('eventUsers')
+        .where('email', '==', callerEmail)
+        .where('role', '==', 'event-manager')
+        .limit(1)
+        .get();
+      hasEventManagerAssignment = !assignmentSnap.empty;
+    }
+
+    const isAllowedCaller = callerRole === 'admin' || hasGlobalEventManagerRole || hasEventManagerAssignment;
+    if (!isAllowedCaller) {
       return NextResponse.json({ error: 'not allowed' }, { status: 403 });
     }
 
@@ -53,7 +66,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'invalid role' }, { status: 400 });
     }
 
-    if (callerRole === 'event-manager' && (role === 'admin' || role === 'rcm' || role === 'event-manager')) {
+    const isEventManagerCaller = hasGlobalEventManagerRole || hasEventManagerAssignment;
+    if (isEventManagerCaller && (role === 'admin' || role === 'rcm' || role === 'event-manager')) {
       return NextResponse.json({ error: 'event manager can only create operational roles' }, { status: 403 });
     }
 
